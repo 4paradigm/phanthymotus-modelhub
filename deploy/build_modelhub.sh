@@ -52,8 +52,10 @@ if [ -z "${REGISTRY:-}" ] || [ -z "${REGISTRY_USER:-}" ] || [ -z "${REGISTRY_PAS
 fi
 
 DATE="$(date +%y%m%d)"
-COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short=7 HEAD)"
-PHANTHYMOTUS_COMMIT="$(git -C "${PHANTHYMOTUS_DIR}" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+# 从 `git archive` 解出来的源码（拷到 rig 上原生构建时）没有 .git：那时显式传
+# BUILD_COMMIT / PHANTHYMOTUS_COMMIT，tag 仍然对应一个真实提交。
+COMMIT="${BUILD_COMMIT:-$(git -C "${REPO_ROOT}" rev-parse --short=7 HEAD)}"
+PHANTHYMOTUS_COMMIT="${PHANTHYMOTUS_COMMIT:-$(git -C "${PHANTHYMOTUS_DIR}" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)}"
 DOCKERFILE="${REPO_ROOT}/modelhub/Dockerfile.jetson"
 BUILD_CONTEXT="${REPO_ROOT}"
 TAG="release.${DATE}.${COMMIT}-jetson-jp${JP_VERSION}"
