@@ -10,13 +10,27 @@ gateway:
   port: 15741
   api_key: ""
 
-models_root: /models/llm          # 权重：/models/llm/<model id>/
-state_dir: /models/modelhub       # 选择的模型、用户添加的模型表；放在卷上，换镜像不丢
+# ModelHub 的全部持久数据都在这一个目录下（容器内路径；主机上是
+# /opt/embodied/models/modelhub，由 deploy/service.yml 挂进来）：
+#   models/<id>/   权重（下载的临时目录也在这里，下完原子 rename）
+#   state/         当前选择的模型（llm.json）、用户添加的模型表（models.user.yaml）
+#   cache/         vLLM / inductor / triton 编译缓存等
+# 不要指到卷外面：容器重建就全丢了，下一次要重下十几 GB。
+root: /models/modelhub
 
 plugins:
   llm:
     enabled: true
     backend_port: 15750           # vLLM 内部端口，只绑 127.0.0.1，外部走网关
     default_memory_gb: 16         # 模型没写 memory_gb 时的内存预算
+    # 预算之外 vLLM 在整机内存里的额外占用。Thor 实测：预算 6 GB 时整机多占 9.8 GB。
+    # 运维页显示的「约占」和「不超过整机 90%」的检查都按 预算 + 这个值 算。
+    host_overhead_gb: 4.4
     load_timeout_s: 1800          # 大模型首次加载含 CUDA graph 捕获，给足
     vllm_executable: vllm
+    # 每个模型的 serve 参数都以这里为底，模型自己写了的覆盖它
+    serve_defaults:
+      # 决策核心同时只有一两路请求；vLLM 默认按高并发捕获 51+35 种批大小的
+      # CUDA graph，Thor 上光这一步就两轮各 62 s，而且每次启动都重做。
+      max_num_seqs: 8
+      cudagraph_capture_sizes: [1, 2, 4, 8]

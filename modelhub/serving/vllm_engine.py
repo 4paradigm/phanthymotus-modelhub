@@ -15,6 +15,7 @@ vLLM 是现成的推理引擎，这里不碰它的内部，只管它作为子进
 from __future__ import annotations
 
 import collections
+import json
 import logging
 import os
 import signal
@@ -41,30 +42,50 @@ def total_memory_gb(meminfo: str = "/proc/meminfo") -> float:
     return 0.0
 
 
-def memory_fraction(budget_gb: float, total_gb: float) -> float:
+# 预算之外、vLLM 进程在整机内存里的额外占用（GB）。
+#
+# 预算只约束 vLLM 自己记账的 GPU 侧（权重 + KV cache + CUDA graph）。在统一内存上，
+# CPU 侧的 Python/torch/CUDA 上下文/编译 worker 也吃同一份内存，而且 CUDA graph 实际
+# 比 vLLM 的估算大。Thor 实测（Qwen3-0.6B，预算 6 GB）：停掉 vLLM 前后 MemAvailable
+# 差 9.8 GB —— 多出 3.8 GB；CUDA graph 实际 0.64 GB、估算 0.08 GB，又多 0.56 GB。
+DEFAULT_HOST_OVERHEAD_GB = 4.4
+
+
+def footprint_gb(budget_gb: float, overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB) -> float:
+    """这个模型跑起来在整机内存里大约占多少 —— 运维页显示的就是这个数。"""
+    return round(budget_gb + overhead_gb, 1)
+
+
+def memory_fraction(budget_gb: float, total_gb: float,
+                    overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB) -> float:
     """把「给这个模型多少 GB」换成 vLLM 的 --gpu-memory-utilization。
 
     vLLM 的这个参数是占「设备总显存」的比例。在独立显卡上那是显卡自己的显存；
     在 Jetson 上设备总显存就是整机内存，默认 0.9 意味着要走整机 90% —— perception、
     agent-core 和系统都在这里面。所以必须让人填绝对值，由这里换算。
+
+    上限检查按实际占用（预算 + overhead_gb）算，不按预算算：只看预算会放行一个
+    实际要吃掉整机 97% 的配置。
     """
     if total_gb <= 0:
         raise ValueError("读不到整机内存，无法换算显存比例")
     if budget_gb <= 0:
         raise ValueError(f"内存预算必须大于 0，收到 {budget_gb}")
-    frac = budget_gb / total_gb
-    if frac > 0.9:
-        raise ValueError(f"内存预算 {budget_gb:.1f} GB 超过整机 {total_gb:.1f} GB 的 90%，"
+    actual = footprint_gb(budget_gb, overhead_gb)
+    if actual > 0.9 * total_gb:
+        raise ValueError(f"内存预算 {budget_gb:.1f} GB 加上进程开销约 {overhead_gb:.1f} GB，"
+                         f"实际约占 {actual:.1f} GB，超过整机 {total_gb:.1f} GB 的 90%，"
                          f"会把系统和其他服务挤死")
-    return round(max(frac, 0.02), 4)
+    return round(max(budget_gb / total_gb, 0.02), 4)
 
 
 def build_command(model_path: str, served_name: str, port: int, serve: dict,
-                  budget_gb: float, total_gb: float, executable: str = "vllm") -> list[str]:
+                  budget_gb: float, total_gb: float, executable: str = "vllm",
+                  overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB) -> list[str]:
     cmd = [executable, "serve", model_path,
            "--served-model-name", served_name,
            "--host", "127.0.0.1", "--port", str(port),
-           "--gpu-memory-utilization", str(memory_fraction(budget_gb, total_gb))]
+           "--gpu-memory-utilization", str(memory_fraction(budget_gb, total_gb, overhead_gb))]
     if serve.get("max_model_len"):
         cmd += ["--max-model-len", str(int(serve["max_model_len"]))]
     if serve.get("tool_call_parser"):
@@ -79,10 +100,34 @@ def build_command(model_path: str, served_name: str, port: int, serve: dict,
             cmd += [flag, str(serve[key])]
     if serve.get("enforce_eager"):
         cmd.append("--enforce-eager")
+    sizes = serve.get("cudagraph_capture_sizes")
+    if sizes:
+        # vLLM 默认按高并发服务捕获 51 + 35 种批大小的 CUDA graph，Thor 上光这一步
+        # 就 2×62 s，而且每次启动都重做（编译缓存只省编译，省不了捕获）。机器人上
+        # 决策核心同时只有一两路请求，只捕获小批量。
+        if not isinstance(sizes, list) or not all(isinstance(n, int) and n > 0 for n in sizes):
+            raise ValueError("serve.cudagraph_capture_sizes 必须是正整数列表")
+        cmd += ["--compilation-config",
+                json.dumps({"cudagraph_capture_sizes": sorted(set(sizes))})]
     extra = serve.get("extra_args") or []
     if not isinstance(extra, list) or not all(isinstance(a, str) for a in extra):
         raise ValueError("serve.extra_args 必须是字符串列表")
     return cmd + extra
+
+
+def cache_env(cache_dir: str) -> dict:
+    """vLLM 及其依赖会写缓存的每个位置，全部指到持久卷上。
+
+    默认它们都在容器内的 ~/.cache 下，容器一重建就丢：Thor 实测 Qwen3-0.6B 冷启动的
+    编译要 18 s，缓存命中后 0.4 s。HOME/XDG 也指过来，兜住没有专门环境变量的库。
+    """
+    return {
+        "VLLM_CACHE_ROOT": f"{cache_dir}/vllm",
+        "TORCHINDUCTOR_CACHE_DIR": f"{cache_dir}/inductor",
+        "TRITON_CACHE_DIR": f"{cache_dir}/triton",
+        "XDG_CACHE_HOME": f"{cache_dir}/xdg",
+        "HF_HOME": f"{cache_dir}/hf",
+    }
 
 
 class VLLMEngine:
@@ -91,16 +136,18 @@ class VLLMEngine:
     def __init__(self, *, model_id: str, model_path: str, port: int, serve: dict,
                  budget_gb: float, total_gb: float, load_timeout_s: float = 1800.0,
                  executable: str = "vllm", log_lines: int = 500,
+                 overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB, cache_dir: str | None = None,
                  popen=subprocess.Popen, env: dict | None = None):
         self.model_id = model_id
         self.port = port
         self.base_url = f"http://127.0.0.1:{port}/v1"
         self.budget_gb = budget_gb
+        self.footprint_gb = footprint_gb(budget_gb, overhead_gb)
         self.command = build_command(model_path, model_id, port, serve, budget_gb,
-                                     total_gb, executable)
+                                     total_gb, executable, overhead_gb)
         self._load_timeout_s = load_timeout_s
         self._popen = popen
-        self._env = env
+        self._env = {**cache_env(cache_dir), **(env or {})} if cache_dir else dict(env or {})
         self._lock = threading.RLock()
         self._state = IDLE
         self._error = ""
@@ -123,7 +170,7 @@ class VLLMEngine:
         try:
             proc = self._popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                stdin=subprocess.DEVNULL, start_new_session=True,
-                               env={**os.environ, **(self._env or {})})
+                               env={**os.environ, **self._env})
         except OSError as error:
             self._fail(f"起不来 vLLM：{error}")
             return
@@ -162,6 +209,7 @@ class VLLMEngine:
             return {
                 "model": self.model_id, "state": self._state, "error": self._error,
                 "base_url": self.base_url, "budget_gb": self.budget_gb,
+                "footprint_gb": self.footprint_gb,
                 "pid": self._proc.pid if self._proc else None,
                 "uptime_s": round(now - self._ready_at, 1) if self._state == READY else 0,
                 "load_s": round((self._ready_at or now) - self._started_at, 1)

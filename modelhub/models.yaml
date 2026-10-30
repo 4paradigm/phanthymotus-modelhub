@@ -10,6 +10,50 @@
 # note 里写「未在 Thor 实测」的，参数是按模型大小估的，实测后再改。
 
 models:
+  phanthymotus-0.1:
+    title: PhanthyMotus 0.1
+    kind: llm
+    note: 基于 Qwen3.5-4B SFT（训练长度 25k）；Qwen3.5 架构，带视觉塔；未在 Thor 实测
+    source:
+      modelscope: JoStWey/pm_1031
+      revision: 167b15bd
+    files:
+      chat_template.jinja:
+        size: 7756
+        sha256: a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715
+      config.json:
+        size: 2952
+        sha256: cfc067e1532e904c4d7b2c696bdee42aa7861891909deb87ff4cd8588a6213d4
+      generation_config.json:
+        size: 213
+        sha256: 7ae9e193dbcef99733ccf647c95ef668c35d1a80a8aa88a51ee40a9bcacf5a74
+      model-00001-of-00002.safetensors:
+        size: 4972947968
+        sha256: 39280ec96f0e43b2302f9ffc5917ac082ff7916ba42645aae7742088b9ea451f
+      model-00002-of-00002.safetensors:
+        size: 4105672464
+        sha256: 8bd8d6a673e4fe3b1c145fd0ae2839f66b748eab92d20dad5e9970d43fcad7b7
+      model.safetensors.index.json:
+        size: 66232
+        sha256: 044807d4c2f35cc7f9ffbbbe0bd9800256e27f5337069cd69e6c8eba0c98e604
+      preprocessor_config.json:
+        size: 390
+        sha256: 27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516
+      processor_config.json:
+        size: 1191
+        sha256: d89ef49ce9cd37fbf510158e13c1ef063d9286411c1ec9049932dbe0487143b1
+      tokenizer.json:
+        size: 19989325
+        sha256: 06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523
+      tokenizer_config.json:
+        size: 1165
+        sha256: 792fa3f0cb88b111e54ef3134c873531008c4df471d108da17903426e308aa7b
+    serve:
+      memory_gb: 16.0
+      max_model_len: 32768
+      tool_call_parser: qwen3_coder
+      reasoning_parser: qwen3
+
   qwen3-0.6b:
     title: Qwen3 0.6B
     kind: llm

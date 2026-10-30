@@ -6,7 +6,7 @@ size/SHA256、以及起服务需要的参数。加一个模型是加一行，不
 
 两份来源，后者覆盖前者：
   - models.yaml           随镜像发的内置表
-  - <state_dir>/models.user.yaml   运维页「添加模型」写进来的，留在 /models 卷上，
+  - <root>/state/models.user.yaml  运维页「添加模型」写进来的，留在 /models 卷上，
                                    换镜像不丢
 
 文件为什么要钉 SHA256：LLM 权重动辄十几 GB，在 Thor 上走 ModelScope 要下几十分钟。
@@ -31,7 +31,9 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MODELSCOPE_API = "https://www.modelscope.cn/api/v1/models"
 
 # 下载时不要的文件：文档、图片、以及有 safetensors 时的旧格式权重。
-_SKIP_NAMES = {".gitattributes", "configuration.json"}
+_SKIP_NAMES = {".gitattributes", "configuration.json",
+               # 训练产物：微调仓库常把它们一起传上来，推理用不到
+               "trainer_state.json", "training_args.bin", "args.json"}
 _SKIP_SUFFIXES = (".md", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf")
 _LEGACY_WEIGHT_SUFFIXES = (".bin", ".pth", ".pt", ".gguf", ".h5", ".msgpack", ".onnx")
 

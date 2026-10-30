@@ -74,8 +74,7 @@ class ModelHubBundle:
         gw = cfg.get("gateway") or {}
         gateway_url = f"http://127.0.0.1:{int(gw.get('port', 15741))}"
         common = dict(router=router,
-                      models_root=cfg.get("models_root", "/models/llm"),
-                      state_dir=cfg.get("state_dir", "/models/modelhub"),
+                      root=cfg.get("root", "/models/modelhub"),
                       builtin_registry=str(HERE / "models.yaml"),
                       gateway_url=gateway_url)
 

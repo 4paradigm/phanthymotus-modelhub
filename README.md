@@ -62,6 +62,18 @@ Two planes:
   (`x-workbench`): pick a model, download, load/unload with a memory budget,
   logs, a test prompt. Only `info` is exposed to the LLM.
 
+### Where things are kept
+
+Everything ModelHub persists lives under one directory on the shared model
+volume — nothing that must survive a container rebuild stays in the container:
+
+```
+/opt/embodied/models/modelhub/        (/models/modelhub in the container)
+  models/<id>/   weights; downloads stage here and are renamed into place
+  state/         llm.json (selected model, budget, autoload), models.user.yaml
+  cache/         vLLM / inductor / triton compile caches
+```
+
 The model service does **not** follow the canvas project: `start`/`stop` only
 report state, and the container reloads the last selected model on boot.
 
@@ -77,11 +89,20 @@ python3 modelhub/tools/pin_model.py Qwen/Qwen3-8B-FP8 --id qwen3-8b-fp8 \
 
 The row pins the repo's HEAD commit and every file's size and SHA256. The ops
 page's "添加模型" does the same at runtime and writes to
-`/models/modelhub/models.user.yaml`.
+`/models/modelhub/state/models.user.yaml`.
 
 `memory_gb` is converted to vLLM's `--gpu-memory-utilization`. On Jetson that
 fraction is of the **whole unified memory**, which perception, Agent Core and
-the OS share; vLLM's default 0.9 would starve them.
+the OS share; vLLM's default 0.9 would starve them. The budget covers only what
+vLLM accounts for on the GPU side; the process itself takes about 4.4 GB more
+(measured on Thor: a 6 GB budget cost 9.8 GB of MemAvailable), so the ops page
+shows budget + `host_overhead_gb`, and that sum is what is capped at 90%.
+
+Selecting a model that is not on disk downloads it first and then loads it —
+from the ops page, and on boot for the remembered selection. While it does, the
+card's `info` is `state: loading` with a progress `message`
+("正在下载模型 'X' … 40% (…)"), which Agent Core shows live in the
+project-start dialog.
 
 ## Build and deploy
 

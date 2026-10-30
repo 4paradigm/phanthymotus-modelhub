@@ -62,7 +62,7 @@
 <h2>模型</h2>
 <div class="scroll">
 <table>
-  <thead><tr><th>模型</th><th>大小</th><th>文件</th><th>加载参数</th><th></th></tr></thead>
+  <thead><tr><th>模型</th><th>大小</th><th>文件</th><th>预算 GB / 上下文</th><th></th></tr></thead>
   <tbody id="models"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
 </table>
 </div>
@@ -119,7 +119,7 @@ async function act(action, args, okText) {
   catch (e) { say(`${action} 失败：${e.message}`, true); }
 }
 
-const STATE_TEXT = {idle:'未加载', loading:'加载中', ready:'就绪', stopping:'停止中', error:'出错'};
+const STATE_TEXT = {idle:'未加载', loading:'准备中', ready:'就绪', error:'出错'};
 let info = null;
 
 function renderInfo(i) {
@@ -128,16 +128,18 @@ function renderInfo(i) {
   $('state').textContent = STATE_TEXT[st] || st;
   $('state').className = 'state ' + st;
   const eng = i.engine || {};
-  $('stateNote').textContent = st === 'loading' ? `已 ${Math.round(eng.load_s || 0)}s · ${eng.last_log || ''}`.slice(0, 160)
-                             : st === 'error' ? (i.error || '') : st === 'ready' ? `加载耗时 ${Math.round(eng.load_s || 0)}s` : '';
+  // message 和 agent-core 启动弹窗里显示的是同一行字
+  $('stateNote').textContent = (i.message || '') +
+    (st === 'ready' && eng.load_s ? ` · 加载耗时 ${Math.round(eng.load_s)}s` : '');
   $('model').textContent = i.model || '—';
   const base = i.serving?.base_url || '—';
   $('endpoint').textContent = base;
   $('clientCfg').textContent = i.model ? JSON.stringify({url: base, key: 'local', model: i.model}) : '—';
   const m = i.memory || {};
   $('memory').textContent = `整机 ${m.total_gb ?? '?'} GB（统一内存，CPU/GPU 共用）` +
-    (eng.budget_gb ? ` · 本模型预算 ${eng.budget_gb} GB` : '');
-  $('unload').disabled = !(st === 'ready' || st === 'loading' || st === 'error');
+    (eng.budget_gb && st !== 'idle' ? ` · 当前模型预算 ${eng.budget_gb} GB，约占 ${eng.footprint_gb} GB` : '') +
+    ` · 进程开销按 ${m.overhead_gb ?? '?'} GB 估`;
+  $('unload').disabled = st === 'idle';
   $('testBtn').disabled = st !== 'ready';
 }
 
@@ -152,14 +154,16 @@ function renderModels(r) {
     else files = '<span class="muted">未下载</span>';
     const s = m.serve || {};
     const mem = s.memory_gb || info?.memory?.default_budget_gb || 16;
-    const params = `<input type="number" step="1" min="1" value="${esc(mem)}" data-mem="${esc(m.id)}"> GB` +
-      ` <input type="number" step="1024" min="512" value="${esc(s.max_model_len || '')}" placeholder="ctx" data-ctx="${esc(m.id)}">`;
+    const params = `<input type="number" step="1" min="1" value="${esc(mem)}" data-mem="${esc(m.id)}">` +
+      ` <input type="number" step="1024" min="512" value="${esc(s.max_model_len || '')}" placeholder="ctx" data-ctx="${esc(m.id)}">` +
+      `<br><span class="muted">约占 ${esc(m.footprint_gb)} GB</span>`;
     const busyDl = dl && dl.state === 'downloading';
     const btns = [];
     if (m.loaded) btns.push('<span class="state ready">使用中</span>');
     else if (m.installed) btns.push(`<button class="primary" data-load="${esc(m.id)}">加载</button>`,
                                     `<button class="danger" data-del="${esc(m.id)}">删文件</button>`);
-    else btns.push(`<button data-dl="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>下载</button>`);
+    else btns.push(`<button class="primary" data-load="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>下载并加载</button>`,
+                   `<button data-dl="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>只下载</button>`);
     if (!m.builtin && !m.loaded) btns.push(`<button class="danger" data-rm="${esc(m.id)}">移除</button>`);
     return `<tr><td><b>${esc(m.title)}</b><br><span class="muted">${esc(m.id)} · ${esc(m.repo)}</span>` +
       (m.note ? `<br><span class="muted">${esc(m.note)}</span>` : '') + `</td>` +
@@ -174,7 +178,9 @@ $('models').addEventListener('click', async ev => {
   if (b.dataset.load) {
     const mem = Number(document.querySelector(`[data-mem="${CSS.escape(id)}"]`).value);
     const ctx = Number(document.querySelector(`[data-ctx="${CSS.escape(id)}"]`).value) || undefined;
-    await act('load', {model: id, memory_gb: mem, max_model_len: ctx}, `开始加载 ${id}（会先停掉当前模型）`);
+    const r = await act('load', {model: id, memory_gb: mem, max_model_len: ctx});
+    if (r) say(r.download_first ? `先下载 ${id}，下完自动加载（约占 ${r.footprint_gb} GB）`
+                                : `开始加载 ${id}（会先停掉当前模型，约占 ${r.footprint_gb} GB）`);
   } else if (b.dataset.dl) await act('download', {model: id}, `开始下载 ${id}`);
   else if (b.dataset.del) { if (confirmTwice(b)) await act('delete_files', {model: id}, `已删除 ${id} 的文件`); }
   else if (b.dataset.rm) { if (confirmTwice(b)) await act('remove_model', {model: id}, `已移除 ${id}`); }

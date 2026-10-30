@@ -21,8 +21,10 @@ class _FakeEngine:
     instances = []
 
     def __init__(self, *, model_id, model_path, port, serve, budget_gb, total_gb,
-                 load_timeout_s, executable):
+                 load_timeout_s, executable, overhead_gb, cache_dir):
         self.model_id, self.serve, self.budget_gb = model_id, serve, budget_gb
+        self.model_path, self.cache_dir = model_path, cache_dir
+        self.footprint_gb = budget_gb + overhead_gb
         self.base_url = f"http://127.0.0.1:{port}/v1"
         self.state = "idle"
         self.stopped = threading.Event()
@@ -44,38 +46,74 @@ class _FakeEngine:
 
 
 class _FakeDownloads:
-    active = None
+    """下载由测试手动推进：progress() 改进度，finish() 写文件并打安装标记。"""
 
-    def job(self, _):
-        return None
+    def __init__(self, models_root):
+        self.models_root = models_root
+        self.active = None
+        self._jobs = {}
+        self.started = []
+
+    def start(self, spec):
+        if self.active and self.active != spec.id:
+            raise RuntimeError(f"正在下载 {self.active}，等它完成再下一个")
+        self.active = spec.id
+        self.started.append(spec.id)
+        self._jobs[spec.id] = {"model": spec.id, "state": "downloading", "pct": 0,
+                               "mb_done": 0, "mb_total": round(spec.size_bytes / 2**20)}
+        self._specs = getattr(self, "_specs", {})
+        self._specs[spec.id] = spec
+
+    def progress(self, model_id, pct):
+        self._jobs[model_id].update(pct=pct, mb_done=self._jobs[model_id]["mb_total"] * pct // 100)
+
+    def finish(self, model_id, ok=True):
+        if ok:
+            _write_files(Path(self.models_root), self._specs[model_id])
+            self._jobs[model_id].update(state="done", pct=100)
+        else:
+            self._jobs[model_id].update(state="error", error="HTTP 404")
+        self.active = None
+
+    def job(self, model_id):
+        job = self._jobs.get(model_id)
+        return dict(job) if job else None
 
     def jobs(self):
-        return {}
+        return {k: dict(v) for k, v in self._jobs.items()}
+
+
+CFG = {"default_memory_gb": 8, "backend_port": 15750, "host_overhead_gb": 4.4,
+       "serve_defaults": {"max_num_seqs": 8, "cudagraph_capture_sizes": [1, 2, 4, 8]}}
 
 
 @pytest.fixture()
 def make(tmp_path):
     _FakeEngine.instances.clear()
+    downloads = _FakeDownloads(str(tmp_path / "root" / "models"))
 
     def build():
         router = Router()
-        plugin = LLMPlugin({"default_memory_gb": 8, "backend_port": 15750}, router=router,
-                           models_root=str(tmp_path / "llm"), state_dir=str(tmp_path / "state"),
+        plugin = LLMPlugin(CFG, router=router, root=str(tmp_path / "root"),
                            builtin_registry=str(BUILTIN), gateway_url="http://127.0.0.1:15741",
-                           engine_factory=_FakeEngine, downloads=_FakeDownloads(), total_gb=59.0)
+                           engine_factory=_FakeEngine, downloads=downloads, total_gb=59.0)
+        plugin.fake_downloads = downloads
         return plugin, router
     return build
 
 
-def _install(tmp_path, plugin, model_id):
-    spec = plugin._registry.get(model_id)
-    d = model_dir(tmp_path / "llm", model_id)
-    d.mkdir(parents=True)
+def _write_files(models_root: Path, spec):
+    d = model_dir(models_root, spec.id)
+    d.mkdir(parents=True, exist_ok=True)
     for name, meta in spec.files.items():
         (d / name).parent.mkdir(parents=True, exist_ok=True)
         with open(d / name, "wb") as f:
             f.truncate(meta["size"])
-    mark_installed(spec, tmp_path / "llm")
+    mark_installed(spec, models_root)
+
+
+def _install(tmp_path, plugin, model_id):
+    _write_files(tmp_path / "root" / "models", plugin._registry.get(model_id))
 
 
 def _wait(pred, timeout=3.0):
@@ -128,11 +166,65 @@ def test_info_reports_serving_for_agent_core_discovery(make, tmp_path):
                                "models": [{"id": "qwen3-0.6b", "state": "ready"}]}
 
 
-def test_load_refuses_a_model_that_is_not_downloaded(make):
-    plugin, _ = make()
+def test_loading_a_model_not_on_disk_downloads_it_first_with_progress(make):
+    """卡片准备时要看得到下载进度：info 的 loading + message 就是 agent-core
+    启动弹窗里显示的那一行。"""
+    plugin, router = make()
     r = plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
-    assert "还没下载" in r["error"]["message"]
+    assert r["download_first"] is True
+    dl = plugin.fake_downloads
+    assert _wait(lambda: dl.started == ["qwen3-0.6b"])
+    dl.progress("qwen3-0.6b", 40)
+    info = plugin.dispatch("llm", {"action": "info"})
+    assert info["state"] == "loading"
+    assert info["message"].startswith("正在下载模型 'Qwen3 0.6B' … 40% (")
+    assert plugin.dispatch("llm", {"action": "start", "instance_id": "c"})["state"] == "loading"
+    assert not _FakeEngine.instances[0].state == "ready"       # 没下完不起引擎
+    dl.finish("qwen3-0.6b")
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    assert plugin.dispatch("llm", {"action": "info"})["state"] == "ready"
+
+
+def test_a_failed_download_is_an_error_the_card_reports(make):
+    plugin, _ = make()
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: plugin.fake_downloads.started)
+    plugin.fake_downloads.finish("qwen3-0.6b", ok=False)
+    assert _wait(lambda: plugin.dispatch("llm", {"action": "info"})["state"] == "error")
+    assert "HTTP 404" in plugin.dispatch("llm", {"action": "info"})["message"]
+
+
+def test_switching_models_mid_download_never_loads_the_old_one(make, tmp_path):
+    plugin, router = make()
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-8b-fp8"})
+    assert _wait(lambda: plugin.fake_downloads.started)
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    plugin.fake_downloads.finish("qwen3-8b-fp8")       # 旧的下载下完了
+    time.sleep(1.5)
+    assert plugin.dispatch("llm", {"action": "info"})["model"] == "qwen3-0.6b"
+    assert [e.model_id for e in _FakeEngine.instances if e.state == "ready"] == ["qwen3-0.6b"]
+
+
+def test_unknown_model_is_rejected(make):
+    plugin, _ = make()
     assert plugin.dispatch("llm", {"action": "load", "model": "nope"})["error"]
+
+
+def test_everything_persistent_lives_under_the_one_root(make, tmp_path):
+    """权重、选择、用户模型表、编译缓存都在 <root> 下 —— 也就是挂进来的卷上。"""
+    plugin, _ = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: _FakeEngine.instances)
+    root = tmp_path / "root"
+    eng = _FakeEngine.instances[-1]
+    assert eng.model_path == str(root / "models" / "qwen3-0.6b")
+    assert eng.cache_dir == str(root / "cache")
+    assert (root / "state" / "llm.json").is_file()
+    assert eng.serve["cudagraph_capture_sizes"] == [1, 2, 4, 8]   # 部署默认垫底
+    assert eng.serve["tool_call_parser"] == "hermes"              # 模型自己的参数在上
 
 
 def test_switching_stops_the_old_engine_first_and_autoload_restores(make, tmp_path):
@@ -144,7 +236,7 @@ def test_switching_stops_the_old_engine_first_and_autoload_restores(make, tmp_pa
     plugin.dispatch("llm", {"action": "load", "model": "qwen3-8b-fp8", "memory_gb": 22})
     assert _wait(lambda: plugin.dispatch("llm", {"action": "info"})["model"] == "qwen3-8b-fp8")
     assert _FakeEngine.instances[0].stopped.is_set()     # 统一内存装不下两份
-    saved = json.loads((tmp_path / "state" / "llm.json").read_text())
+    saved = json.loads((tmp_path / "root" / "state" / "llm.json").read_text())
     assert saved == {"model": "qwen3-8b-fp8", "memory_gb": 22.0,
                      "max_model_len": 32768, "autoload": True}
 
