@@ -1,0 +1,22 @@
+# modelhub/config.yaml — ModelHub bundle 配置
+
+mcp_port: 15740            # MCP 管理面，agent-core 通过它找到卡片
+
+# 统一出口：OpenAI 兼容，按请求里的 model 转发到各卡片起的引擎。
+# 默认只绑本机 —— agent-core 在同一台机器上（host 网络）。要给局域网用，
+# 改 host 并设 api_key，不要把一个无鉴权的大模型接口暴露出去。
+gateway:
+  host: 127.0.0.1
+  port: 15741
+  api_key: ""
+
+models_root: /models/llm          # 权重：/models/llm/<model id>/
+state_dir: /models/modelhub       # 选择的模型、用户添加的模型表；放在卷上，换镜像不丢
+
+plugins:
+  llm:
+    enabled: true
+    backend_port: 15750           # vLLM 内部端口，只绑 127.0.0.1，外部走网关
+    default_memory_gb: 16         # 模型没写 memory_gb 时的内存预算
+    load_timeout_s: 1800          # 大模型首次加载含 CUDA graph 捕获，给足
+    vllm_executable: vllm

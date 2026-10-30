@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>本地大模型</title>
+<style>
+  :root { --bg:#fff; --fg:#1f2328; --muted:#656d76; --line:#d0d7de; --soft:#f6f8fa;
+          --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --accent:#0969da; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8d96a0; --line:#30363d; --soft:#161b22;
+            --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#4493f8; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
+         font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+  h2 { font-size:14px; margin:20px 0 8px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .card { border:1px solid var(--line); border-radius:8px; padding:12px; background:var(--soft); }
+  .kv { display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; }
+  .kv b { font-weight:500; color:var(--muted); }
+  .state { font-weight:600; }
+  .state.ready { color:var(--ok); } .state.loading, .state.stopping, .state.downloading { color:var(--warn); }
+  .state.error { color:var(--bad); } .state.idle { color:var(--muted); }
+  code { font:12px ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg);
+         border:1px solid var(--line); border-radius:4px; padding:1px 5px; word-break:break-all; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-weight:500; color:var(--muted); }
+  button { font:inherit; padding:3px 10px; border-radius:6px; border:1px solid var(--line);
+           background:var(--bg); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:var(--bad); }
+  button:disabled { opacity:.45; cursor:default; }
+  input { font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:6px;
+          background:var(--bg); color:var(--fg); }
+  input[type=number] { width:80px; }
+  .muted { color:var(--muted); }
+  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; width:120px; }
+  .bar i { display:block; height:100%; background:var(--accent); }
+  pre { margin:0; max-height:220px; overflow:auto; font:11px/1.45 ui-monospace,Menlo,monospace;
+        white-space:pre-wrap; word-break:break-all; }
+  #msg { min-height:20px; margin-top:8px; }
+  #msg.err { color:var(--bad); }
+  .scroll { overflow-x:auto; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="kv">
+    <b>状态</b><span><span id="state" class="state idle">连接中…</span> <span id="stateNote" class="muted"></span></span>
+    <b>当前模型</b><span id="model">—</span>
+    <b>接口地址</b><span><code id="endpoint">—</code></span>
+    <b>agent-core 配置</b><span><code id="clientCfg">—</code></span>
+    <b>内存</b><span id="memory">—</span>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="unload" class="danger" disabled>卸载模型</button>
+  </div>
+  <div id="msg"></div>
+</div>
+
+<h2>模型</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>模型</th><th>大小</th><th>文件</th><th>加载参数</th><th></th></tr></thead>
+  <tbody id="models"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
+</table>
+</div>
+
+<h2>添加模型（ModelScope）</h2>
+<div class="row">
+  <input id="addRepo" placeholder="仓库，如 Qwen/Qwen3-8B-FP8" size="30">
+  <input id="addId" placeholder="id（可空）" size="14">
+  <input id="addTool" placeholder="tool_call_parser" size="14" value="hermes">
+  <input id="addReason" placeholder="reasoning_parser" size="14">
+  <button id="addBtn">添加</button>
+</div>
+<div class="muted" style="margin-top:4px">只登记，不下载：会按当前 revision 钉死每个文件的大小和 SHA256。</div>
+
+<h2>试一句</h2>
+<div class="row">
+  <input id="prompt" size="50" value="用一句话介绍你自己。">
+  <button id="testBtn" disabled>发送</button>
+</div>
+<div id="testOut" class="muted" style="margin-top:6px"></div>
+
+<h2>日志 <button id="logBtn" style="margin-left:8px">刷新</button></h2>
+<div class="card"><pre id="logs" class="muted">（未加载模型）</pre></div>
+
+<script>
+'use strict';
+const PROTOCOL = 'motus.workbench/1';
+let port = null, seq = 0;
+const pending = new Map();
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// 宿主一次只放行一个「写」请求（info/stop 之外都算），所以页面自己排队，
+// 不然轮询 models/logs 会和正在跑的 test、load 撞上，报「上一项操作尚未完成」。
+let queue = Promise.resolve();
+function request(method, args) {
+  const run = () => new Promise((resolve, reject) => {
+    const id = 'r' + (++seq);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('请求超时')); }, 25000);
+    pending.set(id, {resolve, reject, timer});
+    port.postMessage({id, method, args});
+  });
+  const p = queue.then(run, run);
+  queue = p.catch(() => {});
+  return p;
+}
+const call = (action, args = {}) => request('call', {action, ...args});
+
+function say(text, isErr = false) {
+  const el = $('msg'); el.textContent = text || ''; el.className = isErr ? 'err' : 'muted';
+}
+async function act(action, args, okText) {
+  try { const r = await call(action, args); if (okText) say(okText); await refreshAll(); return r; }
+  catch (e) { say(`${action} 失败：${e.message}`, true); }
+}
+
+const STATE_TEXT = {idle:'未加载', loading:'加载中', ready:'就绪', stopping:'停止中', error:'出错'};
+let info = null;
+
+function renderInfo(i) {
+  info = i;
+  const st = i.state || 'idle';
+  $('state').textContent = STATE_TEXT[st] || st;
+  $('state').className = 'state ' + st;
+  const eng = i.engine || {};
+  $('stateNote').textContent = st === 'loading' ? `已 ${Math.round(eng.load_s || 0)}s · ${eng.last_log || ''}`.slice(0, 160)
+                             : st === 'error' ? (i.error || '') : st === 'ready' ? `加载耗时 ${Math.round(eng.load_s || 0)}s` : '';
+  $('model').textContent = i.model || '—';
+  const base = i.serving?.base_url || '—';
+  $('endpoint').textContent = base;
+  $('clientCfg').textContent = i.model ? JSON.stringify({url: base, key: 'local', model: i.model}) : '—';
+  const m = i.memory || {};
+  $('memory').textContent = `整机 ${m.total_gb ?? '?'} GB（统一内存，CPU/GPU 共用）` +
+    (eng.budget_gb ? ` · 本模型预算 ${eng.budget_gb} GB` : '');
+  $('unload').disabled = !(st === 'ready' || st === 'loading' || st === 'error');
+  $('testBtn').disabled = st !== 'ready';
+}
+
+function renderModels(r) {
+  const rows = (r.models || []).map(m => {
+    const dl = m.download;
+    let files;
+    if (m.installed) files = '<span class="state ready">已下载</span>';
+    else if (dl && dl.state === 'downloading')
+      files = `<div class="bar"><i style="width:${dl.pct || 0}%"></i></div><span class="muted">${dl.pct || 0}% · ${dl.mb_done || 0}/${dl.mb_total || 0} MB</span>`;
+    else if (dl && dl.state === 'error') files = `<span class="state error" title="${esc(dl.error)}">下载失败</span>`;
+    else files = '<span class="muted">未下载</span>';
+    const s = m.serve || {};
+    const mem = s.memory_gb || info?.memory?.default_budget_gb || 16;
+    const params = `<input type="number" step="1" min="1" value="${esc(mem)}" data-mem="${esc(m.id)}"> GB` +
+      ` <input type="number" step="1024" min="512" value="${esc(s.max_model_len || '')}" placeholder="ctx" data-ctx="${esc(m.id)}">`;
+    const busyDl = dl && dl.state === 'downloading';
+    const btns = [];
+    if (m.loaded) btns.push('<span class="state ready">使用中</span>');
+    else if (m.installed) btns.push(`<button class="primary" data-load="${esc(m.id)}">加载</button>`,
+                                    `<button class="danger" data-del="${esc(m.id)}">删文件</button>`);
+    else btns.push(`<button data-dl="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>下载</button>`);
+    if (!m.builtin && !m.loaded) btns.push(`<button class="danger" data-rm="${esc(m.id)}">移除</button>`);
+    return `<tr><td><b>${esc(m.title)}</b><br><span class="muted">${esc(m.id)} · ${esc(m.repo)}</span>` +
+      (m.note ? `<br><span class="muted">${esc(m.note)}</span>` : '') + `</td>` +
+      `<td>${esc(m.size_gb)} GB</td><td>${files}</td><td>${params}</td><td><div class="row">${btns.join('')}</div></td></tr>`;
+  });
+  $('models').innerHTML = rows.join('') || '<tr><td colspan="5" class="muted">注册表为空</td></tr>';
+}
+
+$('models').addEventListener('click', async ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  const id = b.dataset.load || b.dataset.dl || b.dataset.del || b.dataset.rm;
+  if (b.dataset.load) {
+    const mem = Number(document.querySelector(`[data-mem="${CSS.escape(id)}"]`).value);
+    const ctx = Number(document.querySelector(`[data-ctx="${CSS.escape(id)}"]`).value) || undefined;
+    await act('load', {model: id, memory_gb: mem, max_model_len: ctx}, `开始加载 ${id}（会先停掉当前模型）`);
+  } else if (b.dataset.dl) await act('download', {model: id}, `开始下载 ${id}`);
+  else if (b.dataset.del) { if (confirmTwice(b)) await act('delete_files', {model: id}, `已删除 ${id} 的文件`); }
+  else if (b.dataset.rm) { if (confirmTwice(b)) await act('remove_model', {model: id}, `已移除 ${id}`); }
+});
+
+// 宿主的 iframe 没有 confirm()；用「再点一次确认」代替
+function confirmTwice(btn) {
+  if (btn.dataset.armed) return true;
+  btn.dataset.armed = '1'; const t = btn.textContent; btn.textContent = '再点确认';
+  setTimeout(() => { delete btn.dataset.armed; btn.textContent = t; }, 3000);
+  return false;
+}
+
+$('unload').onclick = ev => { if (confirmTwice(ev.target)) act('unload', {}, '正在卸载'); };
+$('addBtn').onclick = async () => {
+  const repo = $('addRepo').value.trim(); if (!repo) return say('先填仓库名', true);
+  say('正在查询 ModelScope…');
+  const r = await act('add_model', {repo, model: $('addId').value.trim() || undefined,
+    tool_call_parser: $('addTool').value.trim() || undefined,
+    reasoning_parser: $('addReason').value.trim() || undefined});
+  if (r?.added) say(`已添加 ${r.added.id}（${r.added.size_gb} GB，${r.added.files} 个文件）`);
+};
+$('testBtn').onclick = async () => {
+  $('testOut').textContent = '等待回复…';
+  try {
+    const r = await call('test', {prompt: $('prompt').value});
+    $('testOut').innerHTML = `<div>${esc(r.reply)}</div><div class="muted">首 token ${r.ttft_ms} ms` +
+      (r.chunks_per_s ? ` · 约 ${r.chunks_per_s} chunk/s` : '') + `</div>`;
+  } catch (e) { $('testOut').textContent = '失败：' + e.message; }
+};
+$('logBtn').onclick = () => refreshLogs();
+
+async function refreshLogs() {
+  try { const r = await call('logs', {lines: 200}); $('logs').textContent = (r.lines || []).join('\n') || '（无日志）';
+        $('logs').scrollTop = $('logs').scrollHeight; } catch (e) { /* 轮询失败不打扰 */ }
+}
+async function refreshAll() {
+  try { renderInfo(await call('info')); } catch (e) { say('读不到状态：' + e.message, true); return; }
+  try { renderModels(await call('models')); } catch (e) { say('读不到模型列表：' + e.message, true); }
+}
+
+window.addEventListener('message', async event => {
+  if (port || event.source !== parent || event.data?.protocol !== PROTOCOL || !event.ports[0]) return;
+  port = event.ports[0];
+  port.onmessage = ev => {
+    const {id, result, error} = ev.data || {};
+    const p = pending.get(id); if (!p) return;
+    pending.delete(id); clearTimeout(p.timer);
+    error ? p.reject(new Error(typeof error === 'string' ? error : (error.message || JSON.stringify(error))))
+          : p.resolve(result);
+  };
+  await refreshAll(); await refreshLogs();
+  let tick = 0;
+  const poll = async () => {
+    tick++;
+    try { renderInfo(await call('info')); } catch (e) {}
+    const st = info?.state;
+    const downloading = !!info?.download && info.download.state === 'downloading';
+    if (downloading || tick % 5 === 0) { try { renderModels(await call('models')); } catch (e) {} }
+    if (st === 'loading' || st === 'error' || tick % 5 === 0) await refreshLogs();
+    setTimeout(poll, 2000);
+  };
+  setTimeout(poll, 2000);
+});
+</script>
+</body>
+</html>
