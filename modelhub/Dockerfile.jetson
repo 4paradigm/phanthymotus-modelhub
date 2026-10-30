@@ -1,0 +1,38 @@
+# ── ModelHub, Jetson Thor (JetPack 7.2) ─────────────────────────────
+# Build context: 本仓库根目录。另需一个名为 `phanthymotus` 的 named build context
+# 指向 phanthymotus 检出 —— logsafe / model_downloader 从那里拷，不另存一份
+# （两份必然漂移，run-pr-image.sh 就是这么出事的）。deploy/build_modelhub.sh 会传。
+#
+# Usage:
+#   ./deploy/build_modelhub.sh --jp-version 7.2 --mirror tuna
+# ────────────────────────────────────────────────────────────────────
+
+ARG JP_VERSION=72
+# 基础镜像：NVIDIA NGC 的 vLLM 容器（arm64 版自带对 Thor sm_110 编译的 torch +
+# vLLM），原样转存到 TCR，不在这里重装推理栈。转存命令见 README「基础镜像」。
+#   jp72-vllm  ←  nvcr.io/nvidia/vllm:26.10-py3 (arm64)  vLLM 0.31, CUDA 13.4
+ARG BASE_IMAGE=bj-warehouse.tencentcloudcr.com/phanthy-motus/jetson-base:jp${JP_VERSION}-vllm
+FROM ${BASE_IMAGE}
+
+WORKDIR /work
+COPY --from=phanthymotus perception/utils/logsafe.py          /work/logsafe.py
+COPY --from=phanthymotus perception/utils/model_downloader.py /work/model_downloader.py
+COPY modelhub/main.py     /work/main.py
+COPY modelhub/config.yaml /work/config.yaml
+COPY modelhub/models.yaml /work/models.yaml
+COPY modelhub/serving/    /work/serving/
+COPY modelhub/plugins/    /work/plugins/
+COPY modelhub/tools/      /work/tools/
+COPY modelhub/deploy/     /deploy/
+
+# 机器人上 HuggingFace 不通（Thor 实测直连超时）。权重全部由注册表从 ModelScope
+# 下到 /models，vLLM 只读本地目录；离线模式让它不去 HF 查任何东西，否则一次
+# 超时就是几十秒的「加载卡住」。
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    VLLM_NO_USAGE_STATS=1 \
+    DO_NOT_TRACK=1 \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 15740 15741
+CMD ["python3", "/work/main.py"]

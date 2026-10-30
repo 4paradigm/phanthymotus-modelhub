@@ -1,0 +1,32 @@
+# Compose service fragment for ModelHub.
+#
+# agent-core 的部署和 run-pr-image.sh 都从镜像里读这个文件（/deploy/service.yml），
+# 把 __IMAGE__ 换成实际镜像后合进主机的 docker-compose.yml —— 这个文件就是部署本身。
+modelhub:
+  image: __IMAGE__
+  container_name: embodied-modelhub
+  # GPU 走 CDI，不走 `runtime: nvidia`。Thor（JetPack 7.2）上 daemon.json 虽然声明了
+  # nvidia runtime，dockerd 实际只加载了 runc（docker info 只列出 runc），写
+  # runtime: nvidia 容器直接起不来；CDI 设备 nvidia.com/gpu=all 是 JetPack 7 的
+  # nvidia-container-toolkit 生成好的，docker info 里能看到。
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: cdi
+            device_ids: ["nvidia.com/gpu=all"]
+  network_mode: host
+  # vLLM 的 worker 进程之间走共享内存，容器默认 64 MB 的 /dev/shm 不够
+  ipc: host
+  volumes:
+    # 和 perception / actucore 同一个模型卷。ModelHub 只用其中的 modelhub/ 子目录
+    # （config.yaml 的 root），权重、状态、编译缓存全在那里：
+    #   /opt/embodied/models/modelhub/{models/<id>, state, cache}
+    - /opt/embodied/models:/models
+  logging:
+    driver: local
+    options:
+      max-size: "10m"
+      max-file: "3"
+  # 机器人重启后自动起来，并自动加载上次选的模型
+  restart: always
