@@ -166,8 +166,9 @@ button:disabled { cursor: default; opacity: .4; }
 /* 性能测试 */
 .btable th:nth-child(1) { width: 34px; } .btable th:nth-child(2) { width: 96px; } .btable th:nth-child(3) { width: auto; }
 .btable th:nth-child(4), .btable th:nth-child(5) { width: 104px; } .btable th:nth-child(6), .btable th:nth-child(7) { width: 112px; }
-.btable th:nth-child(8) { width: 64px; }
-.btable th:nth-child(4), .btable th:nth-child(5) { width: 92px; } .btable th:nth-child(6), .btable th:nth-child(7) { width: 104px; }
+
+.btable th:nth-child(4), .btable th:nth-child(5), .btable th:nth-child(6) { width: 84px; } .btable th:nth-child(7), .btable th:nth-child(8) { width: 100px; }
+.btable th:nth-child(9) { width: 56px; }
 .btable .name span { white-space: normal; }
 .cmp { margin-bottom: 18px; }
 .cmp h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
@@ -367,7 +368,7 @@ function localList(M) {
       const isCur = m.id === running, st = isCur ? S.info.state : 'idle';
       const action = m.unsupported ? `<span class="tag bad" title="${esc(m.unsupported)}">本机不支持</span>`
         : isCur ? `<button class="btn sm danger" data-stop="1" data-confirm="stop">停止</button>`
-        : running ? `<button class="btn sm" data-load="${esc(m.id)}" data-confirm="switch-${esc(m.id)}" data-confirm-label="再点一次切换">切换到这个</button>`
+        : running ? `<button class="btn sm" data-load="${esc(m.id)}" data-confirm="switch-${esc(m.id)}" data-confirm-label="再点一次切换">换这个</button>`
         : `<button class="btn sm primary" data-load="${esc(m.id)}">启动</button>`;
       return `<tr><td class="name"><b>${esc(m.title)}</b><span>${esc(m.repo)}</span></td>
         <td class="r">${gb(m.disk_gb, 2)} GB</td><td class="r">约 ${gb(m.footprint_gb)} GB</td>
@@ -648,6 +649,8 @@ const benchKey = r => ({
   longTokens: r.results.ttft?.at(-1)?.prompt_tokens, prefill: r.results.ttft?.at(-1)?.prefill_tps,
   decode: r.results.decode?.tps, itl99: r.results.decode?.itl_p99_ms,
   conc: r.results.concurrency?.at(-1)?.total_tps, concN: r.results.concurrency?.at(-1)?.n,
+  warm: r.results.prefix_cache?.warm_ttft_ms, cold: r.results.prefix_cache?.cold_ttft_ms,
+  speedup: r.results.prefix_cache?.speedup,
 });
 function renderBench(full) {
   if (full || !$('benchTop')) $('head').innerHTML = `<h1>性能测试</h1><span class="grow"></span>`;
@@ -658,7 +661,8 @@ function renderBench(full) {
         <div class="acts"><button class="btn sm" data-bench="stop">停止测试</button></div></div>
         <div class="dl-bar"><i style="width:${Math.round(run.step / run.steps * 100)}%"></i></div>
         <div class="dl-meta"><span>测试期间是真实请求，服务会变慢。</span></div></div>`
-    : `<p class="sub">用同一套请求测当前运行的模型：短 / 长提示的首 token 延迟、单路生成速度、1 / 4 / 8 路并发的总吞吐。
+    : `<p class="sub">用同一套请求测当前运行的模型：短 / 长提示的首 token 延迟、单路生成速度、1 / 4 / 8 路并发的总吞吐，
+        以及 agent 场景最关键的前缀缓存（同一段系统提示 + 历史，只换结尾时首 token 快多少）。
         结果连同当时的配置一起保存，换模型或改配置后再测一次，就能放在一起比。</p>
        ${run?.state === 'error' ? `<p class="tag bad" style="margin:0 0 10px">上次测试失败：${esc(run.error)}</p>` : ''}
        <button class="btn primary" data-bench="start" ${ready ? '' : 'disabled'}>${ready ? `测试 ${esc(titleOf(current()))}` : '先启动一个模型'}</button>
@@ -672,12 +676,13 @@ function renderBench(full) {
     <div class="section" id="benchTop">${top}</div>
     <div class="section"><h2>测试记录</h2>${runs.length ? `
       <p class="sub">勾选几次结果，在下面并排比较。</p>
-      <table class="mtable btable"><thead><tr><th></th><th>时间</th><th>模型和配置</th><th class="r">首 token（短）</th><th class="r">首 token（长）</th><th class="r">单路生成</th><th class="r">并发总吞吐</th><th></th></tr></thead><tbody>
+      <table class="mtable btable"><thead><tr><th></th><th>时间</th><th>模型和配置</th><th class="r">首 token（短）</th><th class="r">首 token（长）</th><th class="r">缓存命中后</th><th class="r">单路生成</th><th class="r">并发总吞吐</th><th></th></tr></thead><tbody>
       ${runs.map(r => { const k = benchKey(r), c = r.config || {};
         return `<tr><td><input type="checkbox" data-pick="${esc(r.id)}" ${sel.has(r.id) ? 'checked' : ''} aria-label="选中这次结果"></td>
           <td>${fmtTime(r.ts, true)}</td>
           <td class="name"><b>${esc(r.title)}</b><span>预算 ${gb(c.memory_gb, 0)} GB，上下文 ${c.max_model_len}，并发 ${c.max_num_seqs}，vLLM ${esc((r.engine_version || '').split('+')[0])}</span></td>
           <td class="r">${fmtNum(k.ttftShort)} ms</td><td class="r">${fmtNum(k.ttftLong)} ms</td>
+          <td class="r" title="${k.cold != null ? `同一段约 3k token 前缀：冷 ${fmtNum(k.cold)} ms` : ''}">${k.warm == null ? '—' : `${fmtNum(k.warm)} ms`}${k.speedup ? `<br><span class="muted">快 ${k.speedup} 倍</span>` : ''}</td>
           <td class="r">${fmtNum(k.decode)} token/秒</td><td class="r">${fmtNum(k.conc)} token/秒</td>
           <td class="acts"><button class="btn sm quiet danger" data-bench-del="${esc(r.id)}" data-confirm="bdel-${esc(r.id)}">删除</button></td></tr>`; }).join('')}
       </tbody></table>` : '<p class="sub">还没有测试记录。</p>'}</div>
@@ -687,7 +692,8 @@ function renderBench(full) {
 function compareBars(runs) {
   const metrics = [['ttftShort', '首 token 延迟（短提示）', 'ms', true], ['ttftLong', '首 token 延迟（长提示）', 'ms', true],
                    ['decode', '单路生成速度', 'token/秒', false], ['conc', '并发总吞吐', 'token/秒', false],
-                   ['prefill', '预填充速度', 'token/秒', false]];
+                   ['prefill', '预填充速度', 'token/秒', false],
+                   ['warm', '命中前缀缓存后的首 token 延迟', 'ms', true]];
   const label = r => `${titleOf(r.model) || r.title}　${fmtTime(r.ts, true)}`;
   return metrics.map(([k, name, unit, lowerBetter]) => {
     const vals = runs.map(r => benchKey(r)[k]).filter(v => v != null);
@@ -721,6 +727,7 @@ const CHARTS = [
   {title: '生成速度', unit: 'token/秒', series: [['gen_tps', '生成', 's1'], ['prompt_tps', '输入', 's2']]},
   {title: '请求', unit: '个', series: [['running', '处理中', 's1'], ['waiting', '排队', 's2']]},
   {title: 'KV cache 占用', unit: '%', max: 100, series: [['kv_pct', 'KV cache', 's1']]},
+  {title: '前缀缓存命中率', unit: '%', max: 100, series: [['prefix_hit_pct', '命中率', 's1']]},
   {title: '内存', unit: 'GB', series: [['mem_used_gb', '整机已用', 's1'], ['proc_gb', '推理进程', 's2']]},
   {title: 'GPU 利用率', unit: '%', max: 100, series: [['gpu_util', 'GPU', 's1']]},
   {title: '温度', unit: '°C', series: [['temp_gpu', 'GPU', 's1'], ['temp_cpu', 'CPU', 's2'], ['temp_tj', '结温', 's3']]},
@@ -748,7 +755,8 @@ function renderMonitor() {
   const M = S.metrics;
   if (!M) { $('page').innerHTML = '<div class="wrap"><p class="sub">读取中…</p></div>'; return; }
   const tiles = [['生成速度', lastVal('gen_tps'), 'token/秒', 0], ['处理中的请求', lastVal('running'), '', 0],
-                 ['KV cache', lastVal('kv_pct'), '%', 1], ['整机内存已用', lastVal('mem_used_gb'), 'GB', 1],
+                 ['KV cache', lastVal('kv_pct'), '%', 1], ['前缀缓存命中', lastVal('prefix_hit_pct'), '%', 0],
+                 ['整机内存已用', lastVal('mem_used_gb'), 'GB', 1],
                  ['GPU 温度', lastVal('temp_gpu'), '°C', 0], ['GPU 功耗', lastVal('gpu_power_w'), 'W', 1]];
   $('page').innerHTML = `<div class="wrap" style="max-width:none">
     <div class="tiles">${tiles.map(([l, v, u, d]) => `<div class="tile"><span>${l}</span><b>${v == null ? '—' : (+v).toFixed(d)}</b><small>${u}</small></div>`).join('')}</div>

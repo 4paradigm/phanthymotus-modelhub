@@ -11,6 +11,8 @@ serving/bench.py — 标准性能测试：同一套请求，测出一个模型 +
                   顺带算出预填充速度
   生成速度        单路，提示 ~128，输出 256，3 次中位数；token 间隔 p50 / p99
   并发吞吐        1 / 4 / 8 路同时发（不超过最大并发），提示 ~512，各输出 128
+  前缀缓存        agent 的请求形态：同一段 ~3k token 的前缀（系统提示 + 历史），只换结尾。
+                  第一次是冷的，之后 3 次命中缓存，比两者的首 token 延迟
 
 测试期间是真流量，服务会变慢。
 """
@@ -34,6 +36,12 @@ TOKENS_PER_FILLER = 28          # 上面这句在 Qwen 系 tokenizer 下约 28 t
 PROMPT_LENS = (128, 1024, 4096)
 DECODE_TOKENS = 256
 CONCURRENCY = (1, 4, 8)
+
+
+def _shared_prefix(approx_tokens: int) -> str:
+    """固定前缀（每次测试开头一个随机串，测试内部各请求共用）。"""
+    nonce = "".join(random.choices(string.ascii_letters, k=16))
+    return f"[{nonce}] " + FILLER * max(1, approx_tokens // TOKENS_PER_FILLER)
 
 
 def _prompt(approx_tokens: int) -> str:
@@ -105,7 +113,7 @@ class BenchRunner:
             seqs = int(config.get("max_num_seqs") or 8)
             lens = [n for n in PROMPT_LENS if n + 64 < max_len] or [min(128, max_len // 2)]
             conc = [c for c in CONCURRENCY if c <= seqs] or [1]
-            steps = len(lens) + 1 + len(conc)
+            steps = len(lens) + 1 + len(conc) + 1
             self._cancel.clear()
             self._run = {"id": time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4],
                          "state": "running", "model": model, "title": title, "step": 0,
@@ -162,6 +170,16 @@ class BenchRunner:
                 res["concurrency"].append({"n": c, "total_tps": round(sum(r["gen_tokens"] for r in out) / wall, 1),
                                            "per_request_tps": _med([r["decode_tps"] for r in out]),
                                            "ttft_ms": _med([r["ttft_ms"] for r in out])})
+            self._step("前缀缓存：同一前缀，冷 / 热")
+            n = min(3072, max(256, plan["lens"][-1] - 512))
+            prefix = _shared_prefix(n)
+            cold = self._one(self._url, model, prefix + "\n第 0 轮：请用一句话总结。", 16)
+            warm = [self._one(self._url, model, prefix + f"\n第 {i} 轮：请换个说法总结。", 16)
+                    for i in range(1, 4)]
+            warm_ms = _med([r["ttft_ms"] for r in warm])
+            res["prefix_cache"] = {"prompt_tokens": cold["prompt_tokens"],
+                                   "cold_ttft_ms": round(cold["ttft_ms"], 1), "warm_ttft_ms": warm_ms,
+                                   "speedup": round(cold["ttft_ms"] / warm_ms, 1) if warm_ms else None}
             state, error = "done", ""
         except InterruptedError:
             state, error = "stopped", ""

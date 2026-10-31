@@ -35,6 +35,8 @@ def test_a_run_measures_all_three_groups_and_is_kept(tmp_path):
     assert [t["prompt_tokens"] for t in r["ttft"]] and len(r["ttft"]) == 3
     assert r["decode"]["tps"] == 100.0
     assert [c["n"] for c in r["concurrency"]] == [1, 4, 8]
+    pc = r["prefix_cache"]
+    assert pc["cold_ttft_ms"] and pc["warm_ttft_ms"] and pc["speedup"]
     assert run["config"]["max_model_len"] == 8192 and run["engine_version"] == "0.11.0"
     b.delete(run["id"])
     assert b.list() == []

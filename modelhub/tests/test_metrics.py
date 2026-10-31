@@ -10,6 +10,8 @@ vllm:generation_tokens_total{engine="0",model_name="m"} 1000.0
 vllm:prompt_tokens_total{engine="0",model_name="m"} 400.0
 vllm:request_success_total{engine="0",finished_reason="stop",model_name="m"} 6.0
 vllm:request_success_total{engine="0",finished_reason="length",model_name="m"} 1.0
+vllm:prefix_cache_queries_total{engine="0",model_name="m"} 1000.0
+vllm:prefix_cache_hits_total{engine="0",model_name="m"} 200.0
 """
 
 
@@ -28,7 +30,9 @@ class _Eng:
 
 def test_sampler_turns_counters_into_rates_and_records_5xx(tmp_path):
     store = MetricsStore(str(tmp_path / "m.db"))
-    texts = [PROM, PROM.replace("1000.0", "1500.0").replace("400.0", "450.0")]
+    texts = [PROM, PROM.replace("generation_tokens_total{engine=\"0\",model_name=\"m\"} 1000.0", "generation_tokens_total{engine=\"0\",model_name=\"m\"} 1500.0")
+                   .replace("400.0", "450.0").replace("queries_total{engine=\"0\",model_name=\"m\"} 1000.0", "queries_total{engine=\"0\",model_name=\"m\"} 2000.0")
+                   .replace("200.0", "1100.0")]
     gw = [{"requests": 10, "errors_5xx": 0}, {"requests": 20, "errors_5xx": 3}]
     s = Sampler(store, lambda: _Eng(), lambda: gw.pop(0), fetch=lambda url: texts.pop(0))
     first = s.sample(now=1000.0)
@@ -37,13 +41,14 @@ def test_sampler_turns_counters_into_rates_and_records_5xx(tmp_path):
     second = s.sample(now=1005.0)
     assert second["gen_tps"] == 100.0 and second["prompt_tps"] == 10.0
     assert second["req_rate"] == 2.0 and second["err_rate"] == 0.6
+    assert second["prefix_hit_pct"] == 90.0          # 这 5 秒里 1000 个查询 token 命中 900
     ev = store.events("24h", now=1010)
     assert ev and ev[0]["source"] == "gateway" and "3 个请求返回 5xx" in ev[0]["message"]
 
 
 def test_engine_restart_does_not_produce_a_negative_rate(tmp_path):
     store = MetricsStore(str(tmp_path / "m.db"))
-    texts = [PROM, PROM.replace("1000.0", "10.0")]
+    texts = [PROM, PROM.replace("generation_tokens_total{engine=\"0\",model_name=\"m\"} 1000.0", "generation_tokens_total{engine=\"0\",model_name=\"m\"} 10.0")]
     s = Sampler(store, lambda: _Eng(), lambda: {}, fetch=lambda url: texts.pop(0))
     s.sample(now=0.0)
     assert "gen_tps" not in s.sample(now=5.0)
@@ -75,3 +80,14 @@ def test_query_never_returns_more_than_a_chart_needs(tmp_path):
     for t in range(now - 6 * 3600, now, 5):
         store.add(t, {"gen_tps": 1.0})
     assert len(store.query("6h", now=now)["ts"]) <= 241
+
+
+def test_an_old_database_gets_the_new_columns(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(str(tmp_path / "m.db"))
+    db.execute("CREATE TABLE raw (ts INTEGER PRIMARY KEY, gen_tps REAL)")
+    db.execute("CREATE TABLE minute (ts INTEGER PRIMARY KEY, gen_tps REAL)")
+    db.commit(); db.close()
+    store = MetricsStore(str(tmp_path / "m.db"))
+    store.add(100, {"prefix_hit_pct": 50.0})
+    assert store.query("15m", now=200)["series"]["prefix_hit_pct"][-1] == 50.0

@@ -35,7 +35,8 @@ MINUTE_KEEP_S = 30 * 24 * 3600
 MAX_POINTS = 240
 
 FIELDS = ("gen_tps", "prompt_tps", "running", "waiting", "kv_pct", "req_rate", "err_rate",
-          "mem_used_gb", "proc_gb", "gpu_util", "gpu_power_w", "temp_gpu", "temp_cpu", "temp_tj")
+          "mem_used_gb", "proc_gb", "gpu_util", "gpu_power_w", "temp_gpu", "temp_cpu", "temp_tj",
+          "prefix_hit_pct")
 RANGES = {"15m": 900, "1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400}
 
 _PROM = re.compile(r"^(vllm:[a-z_]+)\{([^}]*)\}\s+([0-9.eE+-]+)$")
@@ -114,6 +115,11 @@ class MetricsStore:
             self._db.execute("CREATE TABLE IF NOT EXISTS events (ts INTEGER, level TEXT, "
                              "source TEXT, message TEXT)")
             self._db.execute("CREATE INDEX IF NOT EXISTS events_ts ON events(ts)")
+            for table in ("raw", "minute"):     # 老库补新列（指标是陆续加的）
+                have = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})")}
+                for f in FIELDS:
+                    if f not in have:
+                        self._db.execute(f"ALTER TABLE {table} ADD COLUMN {f} REAL")
 
     def add(self, ts: int, sample: dict) -> None:
         with self._lock, self._db:
@@ -206,6 +212,10 @@ class Sampler:
                 s["kv_pct"] = None if kv is None else round(kv * 100, 2)
                 counters["gen"] = prom.get("vllm:generation_tokens_total")
                 counters["prompt"] = prom.get("vllm:prompt_tokens_total")
+                # 前缀缓存：按 token 计的查询数和命中数。agent 每轮的系统提示 + 历史是上一轮
+                # 的前缀，命中率就是这部分省下了多少预填充
+                counters["pq"] = prom.get("vllm:prefix_cache_queries_total")
+                counters["ph"] = prom.get("vllm:prefix_cache_hits_total")
             except Exception:                    # noqa: BLE001 — 采样失败只是少一个点
                 pass
             s["proc_gb"] = group_rss_gb(engine.pgid())
@@ -219,6 +229,9 @@ class Sampler:
                 a, b = prev.get(key), counters.get(key)
                 if a is not None and b is not None and b >= a:   # 引擎重启计数会归零
                     s[field] = round((b - a) / dt, 2)
+        q0, q1, h0, h1 = prev.get("pq"), counters.get("pq"), prev.get("ph"), counters.get("ph")
+        if None not in (q0, q1, h0, h1) and q1 > q0 and h1 >= h0:
+            s["prefix_hit_pct"] = round((h1 - h0) / (q1 - q0) * 100, 1)
         a, b = prev.get("err"), counters.get("err")
         if a is not None and b is not None and b > a:
             self.store.event("error", "gateway", f"{int(b - a)} 个请求返回 5xx", int(now))
