@@ -57,6 +57,9 @@ button:disabled { cursor: default; opacity: .4; }
 .wrap { padding: 20px 24px 28px; max-width: 860px; }
 .notice { margin: 0; padding: 8px 24px; font-size: 12px; color: var(--bad); border-bottom: 1px solid var(--line); }
 .notice:empty { display: none; }
+/* 卡片本身跑不起来（比如镜像和显卡驱动不匹配）：不属于哪个模型，所以每一页都显示 */
+.card-error { margin: 0; padding: 10px 24px; font-size: 13px; line-height: 1.5; color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 8%, transparent); border-bottom: 1px solid var(--line); }
 
 .btn { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 5px 12px; white-space: nowrap; }
 .btn:hover:not(:disabled) { background: var(--hover); }
@@ -270,6 +273,7 @@ input[type=number] { -moz-appearance: textfield; }
   </aside>
   <main class="main">
     <header class="head" id="head"></header>
+    <p class="card-error" id="cardError" role="alert" hidden></p>
     <p class="notice" id="notice" role="alert"></p>
     <section class="page" id="page"></section>
   </main>
@@ -934,6 +938,9 @@ $('page').addEventListener('click', e => {
 // ── 轮询 ────────────────────────────────────────────────────────────────
 async function refresh(withModels) {
   S.info = await call('info');
+  const ce = $('cardError'), cardErr = S.info.state === 'error' && !current() ? (S.info.message || '') : '';
+  if (ce.textContent !== cardErr) ce.textContent = cardErr;
+  ce.hidden = !cardErr;
   if (withModels || !S.models) S.models = await call('models');
   if (!S.cfgModel) S.cfgModel = current() || firstInstalled();
 }
