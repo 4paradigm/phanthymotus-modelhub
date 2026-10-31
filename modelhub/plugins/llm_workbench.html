@@ -149,7 +149,7 @@ button:disabled { cursor: default; opacity: .4; }
 .send svg { width: 16px; height: 16px; }
 
 /* 监控 */
-.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .tile { padding: 12px 14px 12px 0; }
 .tile span { display: block; font-size: 12px; color: var(--muted); }
 .tile b { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
@@ -582,7 +582,8 @@ async function loadMetrics() {
   const ev = await act(() => call('events', {range: S.range}));
   if (m) S.metrics = m;
   if (ev) S.events = ev.events;
-  if (S.page === 'monitor') renderMonitor();
+  // 鼠标正停在图上看数值时不重画（重画会冲掉提示框），离开后补上
+  if (S.page === 'monitor') { if (S.hovering) S.stale = true; else renderMonitor(); }
 }
 function lastVal(key) {
   const a = S.metrics?.series?.[key] || [];
@@ -669,7 +670,8 @@ function drawChart(host, c, M) {
     let best = 0; ts.forEach((tt, i) => { if (Math.abs(tt - t) < Math.abs(ts[best] - t)) best = i; });
     show(best);
   });
-  svg.addEventListener('pointerleave', hide);
+  svg.addEventListener('pointerenter', () => { S.hovering = true; });
+  svg.addEventListener('pointerleave', () => { hide(); S.hovering = false; if (S.stale) { S.stale = false; renderMonitor(); } });
   svg.addEventListener('blur', hide);
   svg.addEventListener('keydown', e => {
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); show(Math.max(0, Math.min(n - 1, (cur ?? n - 1) + (e.key === 'ArrowRight' ? 1 : -1)))); }

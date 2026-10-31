@@ -136,6 +136,7 @@ def cache_env(cache_dir: str) -> dict:
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _PROC_PREFIX = re.compile(r"^\((?:APIServer|EngineCore[^)]*) pid=\d+\)\s*")
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+_OWN_POLLS = re.compile(r'"GET /(metrics|health) HTTP/1\.[01]" 200')
 _LEVEL = re.compile(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\b")
 
 
@@ -273,6 +274,8 @@ class VLLMEngine:
     def _pump_logs(self, proc) -> None:
         for raw in iter(proc.stdout.readline, b""):
             line = clean_log_line(raw.decode("utf-8", "replace"))
+            if _OWN_POLLS.search(line):
+                continue        # 监控每 5 秒抓 /metrics、加载时每秒探 /health —— 不留，否则日志全是它
             if line:
                 with self._lock:
                     self._logs.append(line)

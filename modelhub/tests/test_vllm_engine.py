@@ -126,3 +126,15 @@ def _alive(pid) -> bool:
         return "Z" not in Path(f"/proc/{pid}/stat").read_text().split()[2]
     except OSError:
         return True
+
+
+def test_log_lines_are_cleaned_and_our_own_polls_dropped():
+    """vLLM 的日志带终端颜色码；监控每 5 秒抓 /metrics 会把日志刷满。"""
+    from serving.vllm_engine import _OWN_POLLS, clean_log_line, log_level
+    raw = "\x1b[1;36m(APIServer pid=139)\x1b[0;0m INFO 10-31 11:13:43 [loggers.py:127] Engine 000: ok"
+    line = clean_log_line(raw)
+    assert line == "INFO 10-31 11:13:43 [loggers.py:127] Engine 000: ok"
+    assert log_level(line) == "INFO"
+    assert log_level("torch.AcceleratorError: CUDA error: boom") == "ERROR"
+    assert _OWN_POLLS.search('INFO:     127.0.0.1:1 - "GET /metrics HTTP/1.1" 200 OK')
+    assert not _OWN_POLLS.search('INFO:     127.0.0.1:1 - "POST /v1/chat/completions HTTP/1.1" 200 OK')
