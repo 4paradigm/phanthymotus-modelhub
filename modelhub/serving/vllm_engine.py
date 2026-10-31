@@ -192,6 +192,35 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _PROC_PREFIX = re.compile(r"^\((?:APIServer|EngineCore[^)]*) pid=\d+\)\s*")
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 _KV_SIZE = re.compile(r"GPU KV cache size: ([\d,]+) tokens")
+
+# vLLM 启动的几个阶段，按出现顺序：(key, 给人看的名字, 进入这一阶段的日志标志)。
+# 加载要一到两分钟，中间有几十秒一行日志都没有（thor_pack 上 Qwen3 4B 分配 KV cache
+# 那段 46 秒），只显示「准备中」时人分不清是在干活还是卡住了，于是会再点一次启动。
+# 标志取自 vLLM 0.11 / 0.19 的实际输出；认不出的行不影响阶段，只是不前进。
+STARTUP_PHASES = (
+    ("start", "启动推理进程", None),
+    ("weights", "加载权重",
+     re.compile(r"Loading model from scratch|Loading safetensors checkpoint|Loading weights")),
+    ("compile", "编译模型",
+     re.compile(r"Dynamo bytecode transform|Compiling a graph|Directly load the compiled graph")),
+    ("kv", "分配 KV cache",
+     re.compile(r"torch\.compile takes|Initial free memory|Available KV cache memory|"
+                r"GPU KV cache size|Memory profiling")),
+    ("graph", "捕获 CUDA graph", re.compile(r"Capturing CUDA graph")),
+    ("serve", "启动接口", re.compile(r"Starting vLLM API server|init engine \(profile")),
+)
+_PHASE_INDEX = {key: i for i, (key, _, _) in enumerate(STARTUP_PHASES)}
+_SHARDS = re.compile(r"checkpoint shards:\s+\d+% Completed \| (\d+)/(\d+)")
+
+
+def next_phase(current: str, line: str) -> str:
+    """看到这一行之后处在哪个阶段。只往前走：后面阶段的标志出现过，就不会退回去。"""
+    best = _PHASE_INDEX.get(current, 0)
+    for i in range(len(STARTUP_PHASES) - 1, best, -1):
+        marker = STARTUP_PHASES[i][2]
+        if marker is not None and marker.search(line):
+            return STARTUP_PHASES[i][0]
+    return current
 _OWN_POLLS = re.compile(r'"GET /(metrics|health) HTTP/1\.[01]" 200')
 _LEVEL = re.compile(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\b")
 
@@ -240,6 +269,7 @@ class VLLMEngine:
         self._stop_requested = threading.Event()
         self._logs: collections.deque[str] = collections.deque(maxlen=log_lines)
         self.kv_tokens: int | None = None       # 引擎启动后自己报告的 KV cache 容量
+        self._phase, self._phase_at, self._phase_detail = "start", 0.0, ""
 
     # ── 对外 ────────────────────────────────────────────────────────────────
 
@@ -249,6 +279,7 @@ class VLLMEngine:
                 return
             self._state, self._error = LOADING, ""
             self._started_at, self._ready_at = time.monotonic(), 0.0
+            self._phase, self._phase_at, self._phase_detail = "start", self._started_at, ""
             self._stop_requested.clear()
         log.info("[vllm] %s: %s", self.model_id, " ".join(self.command))
         try:
@@ -299,6 +330,8 @@ class VLLMEngine:
                 "load_s": round((self._ready_at or now) - self._started_at, 1)
                 if self._started_at else 0,
                 "last_log": self._logs[-1] if self._logs else "",
+                "phase": self._phase, "phase_detail": self._phase_detail,
+                "phase_s": round(now - self._phase_at, 1) if self._phase_at else 0,
             }
 
     def pgid(self) -> int | None:
@@ -341,6 +374,18 @@ class VLLMEngine:
             if line:
                 with self._lock:
                     self._logs.append(line)
+                    self._advance_phase(line)
+
+    def _advance_phase(self, line: str) -> None:
+        """持锁调用。阶段只往前走；加载权重时记分片进度，KV 分配完记容量。"""
+        phase = next_phase(self._phase, line)
+        if phase != self._phase:
+            self._phase, self._phase_at, self._phase_detail = phase, time.monotonic(), ""
+        shards = _SHARDS.search(line)
+        if shards and self._phase == "weights":
+            self._phase_detail = f"{shards.group(1)}/{shards.group(2)} 个分片"
+        if self._phase == "kv" and self.kv_tokens:
+            self._phase_detail = f"{self.kv_tokens:,} token"
 
     def _healthy(self) -> bool:
         try:

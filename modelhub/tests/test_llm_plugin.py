@@ -430,3 +430,86 @@ def test_an_image_newer_than_the_driver_says_so_and_does_not_start(make):
     assert info["state"] == "error" and info["message"] == problem
     r = plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
     assert problem in str(r) and not _FakeEngine.instances
+
+
+def test_clicking_start_again_does_not_restart_a_load_in_progress(make, tmp_path):
+    """thor_pack 2026-11-01：启动后页面看不出变化，人连点四次，每次都把正在加载的杀掉重来。"""
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    for _ in range(3):
+        r = plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+        assert r.get("already") is True
+    assert len(_FakeEngine.instances) == 1 and not _FakeEngine.instances[0].stopped.is_set()
+
+
+def test_restart_still_restarts(make, tmp_path):
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "force": True})
+    assert _wait(lambda: len(_FakeEngine.instances) == 2 and _FakeEngine.instances[0].stopped.is_set())
+
+
+def test_a_changed_config_is_a_real_reload(make, tmp_path):
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "memory_gb": 6})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "memory_gb": 8})
+    assert _wait(lambda: len(_FakeEngine.instances) == 2)
+
+
+def test_while_the_old_model_stops_the_card_says_loading_not_stopped(make, tmp_path):
+    """停旧引擎最长 30 秒，那期间新引擎还没起：以前报「已停止」，页面又露出「启动」按钮。"""
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "memory_gb": 6})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    old = _FakeEngine.instances[0]
+    release = threading.Event()
+    orig_stop = old.stop
+    old.stop = lambda: (release.wait(5), orig_stop())
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "memory_gb": 8})
+    assert _wait(lambda: len(_FakeEngine.instances) == 2)
+    time.sleep(0.1)
+    info = plugin.dispatch("llm", {"action": "info"})
+    assert info["state"] == "loading" and "正在停止上一个模型" in info["message"]
+    release.set()
+    assert _wait(lambda: plugin.dispatch("llm", {"action": "info"})["state"] == "ready")
+
+
+def test_loading_reports_its_steps_and_recent_log(make, tmp_path):
+    """加载一两分钟里有几十秒没日志：只说「准备中」时人分不清是在干活还是卡住了。"""
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    eng = _FakeEngine.instances[0]
+    eng.state = "loading"
+    eng.status = lambda: {"model": eng.model_id, "state": "loading", "error": "", "budget_gb": 6,
+                          "load_s": 62, "phase": "kv", "phase_detail": "", "phase_s": 41}
+    eng.logs = lambda n: ["INFO Loading weights took 5.88 seconds", "INFO torch.compile takes 6.21 s in total"]
+    info = plugin.dispatch("llm", {"action": "info"})
+    assert info["state"] == "loading" and "分配 KV cache" in info["message"]
+    boot = info["startup"]
+    states = {s["label"]: s["state"] for s in boot["steps"]}
+    assert states["加载权重"] == "done" and states["分配 KV cache"] == "active"
+    assert states["捕获 CUDA graph"] == "todo"
+    assert boot["elapsed_s"] == 62 and boot["phase_s"] == 41 and len(boot["recent"]) == 2
+    eng.state = "ready"
+    eng.status = lambda: {"model": eng.model_id, "state": "ready", "error": "", "budget_gb": 6, "load_s": 99}
+    assert plugin.dispatch("llm", {"action": "info"})["startup"] is None
+
+
+def test_downloading_is_the_first_step(make):
+    plugin, _ = make()
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    dl = plugin.fake_downloads
+    assert _wait(lambda: dl.started == ["qwen3-0.6b"])
+    dl.progress("qwen3-0.6b", 40)
+    boot = plugin.dispatch("llm", {"action": "info"})["startup"]
+    assert boot["steps"][0]["label"] == "下载模型" and boot["steps"][0]["state"] == "active"
+    assert "40%" in boot["steps"][0]["detail"]
