@@ -1,6 +1,6 @@
 # ── ModelHub, Jetson Thor (JetPack 7.2) ─────────────────────────────
 # Build context: 本仓库根目录。另需一个名为 `phanthymotus` 的 named build context
-# 指向 phanthymotus 检出 —— logsafe / model_downloader 从那里拷，不另存一份
+# 指向 phanthymotus 检出 —— logsafe 从那里拷，不另存一份
 # （两份必然漂移，run-pr-image.sh 就是这么出事的）。deploy/build_modelhub.sh 会传。
 #
 # Usage:
@@ -23,7 +23,6 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /work
 COPY --from=phanthymotus perception/utils/logsafe.py          /work/logsafe.py
-COPY --from=phanthymotus perception/utils/model_downloader.py /work/model_downloader.py
 COPY modelhub/main.py     /work/main.py
 COPY modelhub/config.yaml /work/config.yaml
 COPY modelhub/models.yaml /work/models.yaml

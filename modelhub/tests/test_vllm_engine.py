@@ -126,3 +126,46 @@ def _alive(pid) -> bool:
         return "Z" not in Path(f"/proc/{pid}/stat").read_text().split()[2]
     except OSError:
         return True
+
+
+def test_log_lines_are_cleaned_and_our_own_polls_dropped():
+    """vLLM 的日志带终端颜色码；监控每 5 秒抓 /metrics 会把日志刷满。"""
+    from serving.vllm_engine import _OWN_POLLS, clean_log_line, log_level
+    raw = "\x1b[1;36m(APIServer pid=139)\x1b[0;0m INFO 10-31 11:13:43 [loggers.py:127] Engine 000: ok"
+    line = clean_log_line(raw)
+    assert line == "INFO 10-31 11:13:43 [loggers.py:127] Engine 000: ok"
+    assert log_level(line) == "INFO"
+    assert log_level("torch.AcceleratorError: CUDA error: boom") == "ERROR"
+    assert _OWN_POLLS.search('INFO:     127.0.0.1:1 - "GET /metrics HTTP/1.1" 200 OK')
+    assert not _OWN_POLLS.search('INFO:     127.0.0.1:1 - "POST /v1/chat/completions HTTP/1.1" 200 OK')
+
+
+
+def test_kv_cache_is_given_so_vllm_skips_its_memory_profiling():
+    """Thor 上 vLLM 的显存 profiling 拿 MemFree 当空闲；page cache 被回收时它断言失败。"""
+    from serving.vllm_engine import kv_cache_bytes
+    cmd = build_command("/m", "m", 1, {}, budget_gb=16, total_gb=57.8,
+                        weights_bytes=int(8.06e9))
+    i = cmd.index("--kv-cache-memory-bytes")
+    kv_gb = int(cmd[i + 1]) / 2**30
+    assert 5.5 < kv_gb < 6.1                      # 16 - 7.5 GiB 权重 - 2.5 余量
+    assert cmd[cmd.index("--gpu-memory-utilization") + 1] == "0.01"
+    with pytest.raises(ValueError, match="放不下"):
+        kv_cache_bytes(8, int(8.06e9))
+    # 不知道权重大小时退回比例
+    assert "--kv-cache-memory-bytes" not in build_command("/m", "m", 1, {}, 6, 59)
+
+
+def test_kv_bytes_per_token_from_the_models_own_config():
+    """页面据此估「KV cache 放得下多少 token」。Qwen3-4B 在 N4 上：估 43,637，引擎报 43,744。"""
+    from serving.vllm_engine import kv_bytes_per_token
+    qwen3_4b = {"num_hidden_layers": 36, "num_key_value_heads": 8, "num_attention_heads": 32,
+                "head_dim": 128, "hidden_size": 2560, "torch_dtype": "bfloat16"}
+    assert kv_bytes_per_token(qwen3_4b) == 147456
+    assert kv_bytes_per_token(qwen3_4b, "fp8") == 73728
+    # Qwen3.5：多模态把语言部分放在 text_config；每 4 层只有 1 层全注意力
+    qwen35 = {"text_config": {"num_hidden_layers": 32, "num_key_value_heads": 4, "num_attention_heads": 16,
+                              "head_dim": 256, "hidden_size": 2560, "dtype": "bfloat16",
+                              "layer_types": (["linear_attention"] * 3 + ["full_attention"]) * 8}}
+    assert kv_bytes_per_token(qwen35) == 2 * 8 * 4 * 256 * 2
+    assert kv_bytes_per_token({}) is None

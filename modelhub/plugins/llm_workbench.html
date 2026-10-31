@@ -2,103 +2,291 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>本地大模型</title>
 <style>
-  :root { --bg:#fff; --fg:#1f2328; --muted:#656d76; --line:#d0d7de; --soft:#f6f8fa;
-          --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --accent:#0969da; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8d96a0; --line:#30363d; --soft:#161b22;
-            --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#4493f8; }
-  }
-  * { box-sizing:border-box; }
-  body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
-         font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
-  h2 { font-size:14px; margin:20px 0 8px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .card { border:1px solid var(--line); border-radius:8px; padding:12px; background:var(--soft); }
-  .kv { display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; }
-  .kv b { font-weight:500; color:var(--muted); }
-  .state { font-weight:600; }
-  .state.ready { color:var(--ok); } .state.loading, .state.stopping, .state.downloading { color:var(--warn); }
-  .state.error { color:var(--bad); } .state.idle { color:var(--muted); }
-  code { font:12px ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg);
-         border:1px solid var(--line); border-radius:4px; padding:1px 5px; word-break:break-all; }
-  table { width:100%; border-collapse:collapse; }
-  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { font-weight:500; color:var(--muted); }
-  button { font:inherit; padding:3px 10px; border-radius:6px; border:1px solid var(--line);
-           background:var(--bg); color:var(--fg); cursor:pointer; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.danger { color:var(--bad); }
-  button:disabled { opacity:.45; cursor:default; }
-  input { font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:6px;
-          background:var(--bg); color:var(--fg); }
-  input[type=number] { width:80px; }
-  .muted { color:var(--muted); }
-  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; width:120px; }
-  .bar i { display:block; height:100%; background:var(--accent); }
-  pre { margin:0; max-height:220px; overflow:auto; font:11px/1.45 ui-monospace,Menlo,monospace;
-        white-space:pre-wrap; word-break:break-all; }
-  #msg { min-height:20px; margin-top:8px; }
-  #msg.err { color:var(--bad); }
-  .scroll { overflow-x:auto; }
+/* 本地大模型的运维台。按重要性排：模型（下载、磁盘、删除）> 服务（启停、启动配置、日志）
+   > 对话（试模型）> 监控（按时间看图）。宿主 CSP 是 default-src 'none'：只用系统字体，
+   图表是手画的 SVG。图表配色取自 dataviz 参考调色板的前三个槽位（全两两校验通过）。 */
+:root {
+  --bg: #FFFFFF; --rail: #F6F7F9; --ink: #1A1C1F; --muted: #646B73; --faint: #9AA1A9;
+  --line: #E4E7EB; --fill: #EEF0F3; --hover: #F1F3F6;
+  --accent: #2a78d6; --ok: #1f8a4c; --warn: #b26b00; --bad: #c2362f;
+  --button: #1A1C1F; --button-ink: #FFFFFF; --other: #B4BAC2;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --grid: #ECEEF1;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB",
+          "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #17191C; --rail: #1D2024; --ink: #E6E8EB; --muted: #8E959D; --faint: #646B73;
+          --line: #2C3036; --fill: #262A2F; --hover: #23272C;
+          --accent: #3987e5; --ok: #3fb26b; --warn: #e0a23b; --bad: #f07067;
+          --button: #E6E8EB; --button-ink: #17191C; --other: #50575F;
+          --s1: #3987e5; --s2: #d95926; --s3: #199e70; --grid: #262A2F; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.5 var(--sans);
+       -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .4; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+[hidden] { display: none !important; }
+
+.app { display: grid; grid-template-columns: 172px 1fr; height: 100vh; }
+.rail { background: var(--rail); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px; }
+.rail-title { font-size: 14px; font-weight: 600; padding: 2px 10px 14px; }
+.nav { display: grid; gap: 2px; }
+.nav button { display: flex; align-items: center; gap: 10px; border: 0; background: transparent; text-align: left;
+              padding: 7px 10px; border-radius: 8px; color: var(--muted); font-size: 13px; }
+.nav button:hover { background: var(--hover); color: var(--ink); }
+.nav button[aria-current="page"] { background: var(--bg); color: var(--ink); font-weight: 500; box-shadow: 0 0 0 1px var(--line); }
+.nav svg { width: 16px; height: 16px; flex: none; }
+.nav .badge { margin-left: auto; font-size: 11px; color: var(--muted); font-weight: 400; }
+.rail-status { margin-top: auto; padding: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.rail-status b { display: block; color: var(--ink); font-weight: 500; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.main { min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.head { display: flex; align-items: center; gap: 12px; padding: 14px 24px; border-bottom: 1px solid var(--line); min-height: 58px; flex-wrap: wrap; }
+.head h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+.head .grow { flex: 1; }
+.page { flex: 1; min-height: 0; overflow-y: auto; }
+.wrap { padding: 20px 24px 28px; max-width: 860px; }
+.notice { margin: 0; padding: 8px 24px; font-size: 12px; color: var(--bad); border-bottom: 1px solid var(--line); }
+.notice:empty { display: none; }
+
+.btn { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 5px 12px; white-space: nowrap; }
+.btn:hover:not(:disabled) { background: var(--hover); }
+.btn.primary { background: var(--button); color: var(--button-ink); border-color: var(--button); }
+.btn.primary:hover:not(:disabled) { opacity: .88; background: var(--button); }
+.btn.quiet { border-color: transparent; background: transparent; color: var(--muted); }
+.btn.quiet:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.btn.danger { color: var(--bad); }
+.btn.armed { border-color: var(--bad); color: var(--bad); }
+.btn.sm { padding: 3px 9px; font-size: 12px; }
+.seg { display: inline-flex; background: var(--fill); border-radius: 8px; padding: 2px; }
+.seg button { border: 0; background: transparent; padding: 4px 12px; border-radius: 6px; color: var(--muted); font-size: 12px; }
+.seg button[aria-pressed="true"] { background: var(--bg); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.08); font-weight: 500; }
+
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); vertical-align: 1px; margin-right: 6px; }
+.dot.ready { background: var(--ok); } .dot.loading { background: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
+.dot.error { background: var(--bad); }
+@keyframes pulse { 50% { opacity: .35; } }
+
+.section { margin-top: 26px; }
+.section:first-child { margin-top: 0; }
+.section h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+.sub { color: var(--muted); margin: 0 0 12px; }
+.muted { color: var(--muted); }
+
+/* 用量条（磁盘）：分段 + 下方一行说明 */
+.usage-track { display: flex; height: 8px; border-radius: 4px; background: var(--fill); overflow: hidden; gap: 2px; }
+.usage-track i { display: block; height: 100%; }
+.u-mine { background: var(--accent); } .u-other { background: var(--other); }
+.usage-text { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; }
+.usage-text b { color: var(--ink); font-weight: 500; }
+.key { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+
+/* 表格式列表 */
+.list { border-top: 1px solid var(--line); }
+.item { display: grid; grid-template-columns: minmax(0, 1fr) 84px 96px 92px auto; gap: 12px; align-items: center;
+        padding: 11px 4px; border-bottom: 1px solid var(--line); }
+.item.head-row { padding: 6px 4px; font-size: 12px; color: var(--muted); }
+.item .name b { display: block; font-weight: 500; }
+.item .name span { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .num { white-space: nowrap; }
+.item .acts { display: flex; gap: 6px; justify-content: flex-end; }
+.tag { font-size: 12px; color: var(--muted); }
+.tag.ok { color: var(--ok); } .tag.warn { color: var(--warn); } .tag.bad { color: var(--bad); }
+
+.mtable { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.mtable th { text-align: left; font-weight: 400; font-size: 12px; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); }
+.mtable td { padding: 11px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.mtable th:nth-child(2), .mtable th:nth-child(3) { width: 104px; }
+.mtable th:nth-child(4) { width: 88px; } .mtable th:nth-child(5) { width: 232px; }
+.mtable .r { text-align: right; white-space: nowrap; }
+.mtable .name b { display: block; font-weight: 500; }
+.mtable .name span { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mtable .acts { text-align: right; white-space: nowrap; }
+.mtable .acts .btn + .btn { margin-left: 6px; }
+@media (max-width: 640px) { .mtable th:nth-child(2), .mtable td:nth-child(2), .mtable th:nth-child(4), .mtable td:nth-child(4) { display: none; } .mtable th:nth-child(5) { width: 150px; } }
+/* 下载 */
+.dl { padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.dl-top { display: flex; align-items: baseline; gap: 12px; }
+.dl-top b { font-weight: 500; }
+.dl-top .acts { margin-left: auto; display: flex; gap: 6px; }
+.dl-bar { height: 6px; border-radius: 3px; background: var(--fill); overflow: hidden; margin: 8px 0 6px; }
+.dl-bar i { display: block; height: 100%; background: var(--accent); transition: width .6s; }
+.dl-bar.paused i { background: var(--other); }
+.dl-meta { display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+
+/* 服务 */
+.status-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 22px; }
+.status-grid dt { color: var(--muted); } .status-grid dd { margin: 0; word-break: break-all; }
+.status-big { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+/* 表单：一套间距（4/8/12/16/24），控件同高 34px，字段顶对齐 —— 一行里某个字段的说明
+   折行时，别的字段不再被 grid 拉高 */
+.form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.field { display: grid; gap: 4px; align-content: start; font-size: 12px; color: var(--muted); min-width: 0; }
+.field > span { display: flex; align-items: center; gap: 6px; height: 18px; }
+.field input, .field select, select.input, .inline-field input {
+  height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+  font-size: 13px; color: var(--ink); width: 100%; -webkit-appearance: none; appearance: none; }
+.field select, select.input { padding-right: 28px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23878d95' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m1 1 4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center; }
+input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; }
+.field.changed > span::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.field .hint { font-size: 12px; color: var(--faint); line-height: 1.5; }
+.field .hint .def { color: var(--accent); }
+.cfg-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.cfg-head h2 { margin: 0; }
+.cfg-head select { width: auto; min-width: 220px; }
+.cfg-foot { display: flex; align-items: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.cfg-foot .grow { flex: 1; }
+.cfg-foot .muted { margin-right: 8px; }
+@media (max-width: 760px) { .form { grid-template-columns: 1fr; } }
+.kv-est { margin-top: 16px; padding: 16px; background: var(--rail); border: 1px solid var(--line); border-radius: 8px;
+          display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px 24px; align-items: end; }
+.kv-cap span, .inline-field span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.kv-cap b { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.kv-cap small { font-size: 12px; color: var(--muted); margin-left: 4px; }
+.kv-formula { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.inline-field { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.inline-field input { width: 104px; }
+.kv-result { grid-column: 1 / -1; font-size: 13px; line-height: 1.6; padding-top: 12px; border-top: 1px solid var(--line); }
+.kv-result b { font-weight: 600; }
+.kv-note { grid-column: 1 / -1; font-size: 12px; color: var(--muted); line-height: 1.6; margin: 0; }
+.bad-text { color: var(--bad); font-weight: 500; }
+.advanced { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
+.advanced summary { cursor: pointer; font-size: 13px; color: var(--muted); list-style: none; display: flex; align-items: center; gap: 6px; height: 24px; }
+.advanced summary::-webkit-details-marker { display: none; }
+.advanced summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); margin: 0 2px; transition: transform .15s; }
+.advanced[open] summary::before { transform: rotate(45deg); }
+.advanced[open] summary { color: var(--ink); }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.logs-bar { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.logs-bar input { flex: 1; min-width: 160px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.logs { font: 11.5px/1.6 var(--mono); background: var(--rail); border: 1px solid var(--line); border-radius: 8px;
+        padding: 10px 12px; height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--ink); }
+.logs .l-WARNING { color: var(--warn); } .logs .l-ERROR { color: var(--bad); } .logs .l-DEBUG { color: var(--faint); }
+
+/* 对话 */
+.chat-page { display: flex; flex-direction: column; height: 100%; }
+.chat-scroll { flex: 1; overflow-y: auto; }
+.chat { max-width: 680px; margin: 0 auto; padding: 22px 24px; display: flex; flex-direction: column; gap: 20px; }
+.user { align-self: flex-end; max-width: 80%; background: var(--fill); padding: 8px 14px; border-radius: 16px;
+        font-size: 15px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.bot { font-size: 15px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.bot .note { display: block; margin-top: 4px; font-size: 12px; color: var(--faint); }
+.bot.err { color: var(--bad); font-size: 13px; }
+.caret::after { content: ""; display: inline-block; width: 7px; height: 15px; margin-left: 2px; vertical-align: -2px; background: var(--ink); animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.empty { padding: 14vh 24px 0; text-align: center; color: var(--muted); text-wrap: balance; }
+.empty b { display: block; color: var(--ink); font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+.composer-wrap { padding: 8px 24px 18px; }
+.composer { max-width: 680px; margin: 0 auto; border: 1px solid var(--line); border-radius: 16px; padding: 10px 10px 10px 16px; display: flex; gap: 8px; align-items: flex-end; }
+.composer:focus-within { border-color: var(--muted); }
+.composer textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; font-size: 15px; line-height: 1.6; max-height: 160px; min-height: 26px; padding: 3px 0; }
+.send { width: 32px; height: 32px; border-radius: 50%; border: 0; background: var(--button); color: var(--button-ink); display: grid; place-items: center; flex: none; }
+.send svg { width: 16px; height: 16px; }
+
+/* 性能测试 */
+.btable th:nth-child(1) { width: 34px; } .btable th:nth-child(2) { width: 96px; } .btable th:nth-child(3) { width: auto; }
+.btable th:nth-child(4), .btable th:nth-child(5) { width: 104px; } .btable th:nth-child(6), .btable th:nth-child(7) { width: 112px; }
+
+.btable th:nth-child(4), .btable th:nth-child(5), .btable th:nth-child(6) { width: 84px; } .btable th:nth-child(7), .btable th:nth-child(8) { width: 100px; }
+.btable th:nth-child(9) { width: 56px; }
+.btable .name span { white-space: normal; }
+.cmp { margin-bottom: 18px; }
+.cmp h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.cmp h3 .muted { font-weight: 400; }
+.cmp-row { display: grid; grid-template-columns: 220px 1fr 84px; gap: 10px; align-items: center; margin: 4px 0; font-size: 12px; }
+.cmp-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-track { height: 14px; }
+.cmp-track i { display: block; height: 100%; background: var(--s1); border-radius: 0 4px 4px 0; }
+.cmp-val { text-align: right; } .cmp-val.best { font-weight: 600; }
+/* 监控 */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.tile { padding: 12px 14px 12px 0; }
+.tile span { display: block; font-size: 12px; color: var(--muted); }
+.tile b { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.tile small { font-size: 12px; color: var(--muted); margin-left: 3px; }
+.charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 26px 28px; margin-top: 22px; }
+.chart h3 { font-size: 13px; font-weight: 600; margin: 0; }
+.chart .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 2px 0 6px; min-height: 18px; }
+.chart .legend i { display: inline-block; width: 12px; height: 2px; border-radius: 1px; vertical-align: 3px; margin-right: 5px; }
+.chart .plot { position: relative; }
+.chart svg { display: block; width: 100%; height: 150px; overflow: visible; }
+.chart svg:focus-visible { outline-offset: 4px; }
+.chart.loading { opacity: .55; }
+.tip { position: absolute; top: 0; pointer-events: none; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+       box-shadow: 0 6px 18px rgba(0,0,0,.10); padding: 7px 10px; font-size: 12px; white-space: nowrap; z-index: 2; }
+.tip .t { color: var(--muted); margin-bottom: 3px; }
+.tip .r { display: flex; align-items: center; gap: 7px; }
+.tip .r i { width: 10px; height: 2px; border-radius: 1px; }
+.tip .r b { font-weight: 600; }
+.tip .r span { color: var(--muted); }
+.nodata { height: 150px; display: grid; place-items: center; color: var(--faint); font-size: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.events { border-top: 1px solid var(--line); }
+.event { display: grid; grid-template-columns: 116px 72px 1fr; gap: 12px; padding: 8px 4px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.event .src { color: var(--muted); }
+.event .msg { color: var(--ink); word-break: break-all; }
+.event .lv::before { content: "●"; color: var(--bad); margin-right: 5px; font-size: 9px; vertical-align: 1px; }
+.table-wrap { overflow-x: auto; margin-top: 12px; max-height: 320px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.data-table { border-collapse: collapse; font-size: 12px; width: 100%; }
+.data-table th, .data-table td { padding: 5px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.data-table th { position: sticky; top: 0; background: var(--rail); font-weight: 500; color: var(--muted); }
+.data-table td:first-child, .data-table th:first-child { text-align: left; }
+
+@media (max-width: 640px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .rail { flex-direction: row; align-items: center; padding: 8px; border-right: 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .rail-title, .rail-status { display: none; }
+  .nav { grid-auto-flow: column; }
+  .item { grid-template-columns: minmax(0, 1fr) auto; }
+  .item > .num, .item > .tag-col { display: none; }
+  .wrap, .head { padding-left: 14px; padding-right: 14px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
-<div class="card">
-  <div class="kv">
-    <b>状态</b><span><span id="state" class="state idle">连接中…</span> <span id="stateNote" class="muted"></span></span>
-    <b>当前模型</b><span id="model">—</span>
-    <b>接口地址</b><span><code id="endpoint">—</code></span>
-    <b>agent-core 配置</b><span><code id="clientCfg">—</code></span>
-    <b>内存</b><span id="memory">—</span>
-    <b>推理引擎</b><span id="engine">—</span>
-  </div>
-  <div class="row" style="margin-top:10px">
-    <button id="unload" class="danger" disabled>卸载模型</button>
-  </div>
-  <div id="msg"></div>
+<div class="app">
+  <aside class="rail">
+    <div class="rail-title">本地大模型</div>
+    <nav class="nav" aria-label="功能">
+      <button data-page="models" aria-current="page"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 13.8 5v6L8 14.2 2.2 11V5z"/><path d="M2.2 5 8 8.2 13.8 5M8 8.2v6"/></svg>模型<span class="badge" id="dlBadge"></span></button>
+      <button data-page="service"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 2v5"/><path d="M4.6 4.2a5 5 0 1 0 6.8 0"/></svg>服务</button>
+      <button data-page="chat"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v7.5H7l-3 2.5V11H2.5z"/></svg>对话</button>
+      <button data-page="bench"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 13.5V9M8 13.5V4M13 13.5V7"/></svg>性能测试</button>
+      <button data-page="monitor"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12.5h12"/><path d="m2.5 10 3-3.5 2.5 2 5-5.5"/></svg>监控</button>
+    </nav>
+    <div class="rail-status" id="railStatus">读取中…</div>
+  </aside>
+  <main class="main">
+    <header class="head" id="head"></header>
+    <p class="notice" id="notice" role="alert"></p>
+    <section class="page" id="page"></section>
+  </main>
 </div>
-
-<h2>模型</h2>
-<div class="scroll">
-<table>
-  <thead><tr><th>模型</th><th>大小</th><th>文件</th><th>预算 GB / 上下文</th><th></th></tr></thead>
-  <tbody id="models"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
-</table>
-</div>
-
-<h2>添加模型（ModelScope）</h2>
-<div class="row">
-  <input id="addRepo" placeholder="仓库，如 Qwen/Qwen3-8B-FP8" size="30">
-  <input id="addId" placeholder="id（可空）" size="14">
-  <input id="addTool" placeholder="tool_call_parser" size="14" value="hermes">
-  <input id="addReason" placeholder="reasoning_parser" size="14">
-  <button id="addBtn">添加</button>
-</div>
-<div class="muted" style="margin-top:4px">只登记，不下载：会按当前 revision 钉死每个文件的大小和 SHA256。</div>
-
-<h2>试一句</h2>
-<div class="row">
-  <input id="prompt" size="50" value="用一句话介绍你自己。">
-  <button id="testBtn" disabled>发送</button>
-</div>
-<div id="testOut" class="muted" style="margin-top:6px"></div>
-
-<h2>日志 <button id="logBtn" style="margin-left:8px">刷新</button></h2>
-<div class="card"><pre id="logs" class="muted">（未加载模型）</pre></div>
 
 <script>
 'use strict';
 const PROTOCOL = 'motus.workbench/1';
-let port = null, seq = 0;
-const pending = new Map();
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const gb = (x, d = 1) => (x == null || isNaN(x)) ? '—' : (+x).toFixed(d);
+const fmtBytes = b => b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${Math.round(b / 1e6)} MB`;
+const fmtEta = s => s == null ? '—' : s < 60 ? `${s} 秒` : s < 3600 ? `${Math.round(s / 60)} 分钟` : `${(s / 3600).toFixed(1)} 小时`;
 
-// 宿主一次只放行一个「写」请求（info/stop 之外都算），所以页面自己排队，
-// 不然轮询 models/logs 会和正在跑的 test、load 撞上，报「上一项操作尚未完成」。
-let queue = Promise.resolve();
+// ── 和宿主通信：宿主一次只放行一个写请求，页面自己排队 ─────────────────────
+let port = null, seq = 0, queue = Promise.resolve();
+const pending = new Map();
 function request(method, args) {
   const run = () => new Promise((resolve, reject) => {
     const id = 'r' + (++seq);
@@ -111,121 +299,661 @@ function request(method, args) {
   return p;
 }
 const call = (action, args = {}) => request('call', {action, ...args});
+const notice = t => { $('notice').textContent = t || ''; };
+async function act(fn) { notice(''); try { return await fn(); } catch (e) { notice(e.message); } }
 
-function say(text, isErr = false) {
-  const el = $('msg'); el.textContent = text || ''; el.className = isErr ? 'err' : 'muted';
-}
-async function act(action, args, okText) {
-  try { const r = await call(action, args); if (okText) say(okText); await refreshAll(); return r; }
-  catch (e) { say(`${action} 失败：${e.message}`, true); }
-}
+// ── 全局状态 ─────────────────────────────────────────────────────────────
+const S = {page: 'models', info: null, models: null, modelsTab: 'local', cfgModel: null, cfg: null,
+           logLevel: '', logQ: '', chat: [], job: null, streaming: false,
+           range: '1h', metrics: null, events: [], showTable: false};
+const current = () => S.info?.model || null;
+const modelOf = id => (S.models?.models || []).find(m => m.id === id);
+const titleOf = id => modelOf(id)?.title || id || '';
+const STATE_TEXT = {ready: '运行中', loading: '准备中', error: '出错', idle: '已停止'};
 
-const STATE_TEXT = {idle:'未加载', loading:'准备中', ready:'就绪', error:'出错'};
-let info = null;
-
-function renderInfo(i) {
-  info = i;
-  const st = i.state || 'idle';
-  $('state').textContent = STATE_TEXT[st] || st;
-  $('state').className = 'state ' + st;
-  const eng = i.engine || {};
-  // message 和 agent-core 启动弹窗里显示的是同一行字
-  $('stateNote').textContent = (i.message || '') +
-    (st === 'ready' && eng.load_s ? ` · 加载耗时 ${Math.round(eng.load_s)}s` : '');
-  $('model').textContent = i.model || '—';
-  $('engine').textContent = i.engine_version ? `vLLM ${i.engine_version.split('+')[0]}` : '—';
-  const base = i.serving?.base_url || '—';
-  $('endpoint').textContent = base;
-  $('clientCfg').textContent = i.model ? JSON.stringify({url: base, key: 'local', model: i.model}) : '—';
-  const m = i.memory || {};
-  $('memory').textContent = `整机 ${m.total_gb ?? '?'} GB（统一内存，CPU/GPU 共用）` +
-    (eng.budget_gb && st !== 'idle' ? ` · 当前模型预算 ${eng.budget_gb} GB，约占 ${eng.footprint_gb} GB` : '') +
-    ` · 进程开销按 ${m.overhead_gb ?? '?'} GB 估`;
-  $('unload').disabled = st === 'idle';
-  $('testBtn').disabled = st !== 'ready';
-}
-
-function renderModels(r) {
-  const rows = (r.models || []).map(m => {
-    const dl = m.download;
-    let files;
-    if (m.installed) files = '<span class="state ready">已下载</span>';
-    else if (dl && dl.state === 'downloading')
-      files = `<div class="bar"><i style="width:${dl.pct || 0}%"></i></div><span class="muted">${dl.pct || 0}% · ${dl.mb_done || 0}/${dl.mb_total || 0} MB</span>`;
-    else if (dl && dl.state === 'error') files = `<span class="state error" title="${esc(dl.error)}">下载失败</span>`;
-    else files = '<span class="muted">未下载</span>';
-    const s = m.serve || {};
-    const mem = s.memory_gb || info?.memory?.default_budget_gb || 16;
-    const params = `<input type="number" step="1" min="1" value="${esc(mem)}" data-mem="${esc(m.id)}">` +
-      ` <input type="number" step="1024" min="512" value="${esc(s.max_model_len || '')}" placeholder="ctx" data-ctx="${esc(m.id)}">` +
-      `<br><span class="muted">约占 ${esc(m.footprint_gb)} GB</span>`;
-    const busyDl = dl && dl.state === 'downloading';
-    const btns = [];
-    if (m.unsupported) btns.push(`<span class="state error" title="${esc(m.unsupported)}">本机不支持</span>`);
-    else if (m.loaded) btns.push('<span class="state ready">使用中</span>');
-    else if (m.installed) btns.push(`<button class="primary" data-load="${esc(m.id)}">加载</button>`,
-                                    `<button class="danger" data-del="${esc(m.id)}">删文件</button>`);
-    else btns.push(`<button class="primary" data-load="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>下载并加载</button>`,
-                   `<button data-dl="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>只下载</button>`);
-    if (!m.builtin && !m.loaded) btns.push(`<button class="danger" data-rm="${esc(m.id)}">移除</button>`);
-    return `<tr><td><b>${esc(m.title)}</b><br><span class="muted">${esc(m.id)} · ${esc(m.repo)}</span>` +
-      (m.note ? `<br><span class="muted">${esc(m.note)}</span>` : '') +
-      (m.unsupported ? `<br><span class="state error">${esc(m.unsupported)}</span>` : '') + `</td>` +
-      `<td>${esc(m.size_gb)} GB</td><td>${files}</td><td>${params}</td><td><div class="row">${btns.join('')}</div></td></tr>`;
-  });
-  $('models').innerHTML = rows.join('') || '<tr><td colspan="5" class="muted">注册表为空</td></tr>';
-}
-
-$('models').addEventListener('click', async ev => {
-  const b = ev.target.closest('button'); if (!b) return;
-  const id = b.dataset.load || b.dataset.dl || b.dataset.del || b.dataset.rm;
-  if (b.dataset.load) {
-    const mem = Number(document.querySelector(`[data-mem="${CSS.escape(id)}"]`).value);
-    const ctx = Number(document.querySelector(`[data-ctx="${CSS.escape(id)}"]`).value) || undefined;
-    const r = await act('load', {model: id, memory_gb: mem, max_model_len: ctx});
-    if (r) say(r.download_first ? `先下载 ${id}，下完自动加载（约占 ${r.footprint_gb} GB）`
-                                : `开始加载 ${id}（会先停掉当前模型，约占 ${r.footprint_gb} GB）`);
-  } else if (b.dataset.dl) await act('download', {model: id}, `开始下载 ${id}`);
-  else if (b.dataset.del) { if (confirmTwice(b)) await act('delete_files', {model: id}, `已删除 ${id} 的文件`); }
-  else if (b.dataset.rm) { if (confirmTwice(b)) await act('remove_model', {model: id}, `已移除 ${id}`); }
-});
-
-// 宿主的 iframe 没有 confirm()；用「再点一次确认」代替
-function confirmTwice(btn) {
-  if (btn.dataset.armed) return true;
-  btn.dataset.armed = '1'; const t = btn.textContent; btn.textContent = '再点确认';
-  setTimeout(() => { delete btn.dataset.armed; btn.textContent = t; }, 3000);
+// 「再点一次确认」：iframe 里没有 confirm()。确认态记在 S 里、按 key 认按钮，
+// 页面每 2 秒重画也不会丢 —— 记在按钮元素上时，重画后第二下点到的是新按钮，永远确认不了。
+function confirmTwice(b, label = '再点一次确认') {
+  const key = b.dataset.confirm;
+  if (S.armed && S.armed.key === key && Date.now() < S.armed.until) { S.armed = null; return true; }
+  S.armed = {key, label, until: Date.now() + 3500};
+  applyArmed();
+  setTimeout(() => { if (S.armed && S.armed.key === key && Date.now() >= S.armed.until) { S.armed = null; render(false); } }, 3600);
   return false;
 }
+function applyArmed() {
+  if (!S.armed || Date.now() >= S.armed.until) return;
+  const b = document.querySelector(`[data-confirm="${CSS.escape(S.armed.key)}"]`);
+  if (b) { b.textContent = S.armed.label; b.classList.add('armed'); }
+}
 
-$('unload').onclick = ev => { if (confirmTwice(ev.target)) act('unload', {}, '正在卸载'); };
-$('addBtn').onclick = async () => {
-  const repo = $('addRepo').value.trim(); if (!repo) return say('先填仓库名', true);
-  say('正在查询 ModelScope…');
-  const r = await act('add_model', {repo, model: $('addId').value.trim() || undefined,
-    tool_call_parser: $('addTool').value.trim() || undefined,
-    reasoning_parser: $('addReason').value.trim() || undefined});
-  if (r?.added) say(`已添加 ${r.added.id}（${r.added.size_gb} GB，${r.added.files} 个文件）`);
-};
-$('testBtn').onclick = async () => {
-  $('testOut').textContent = '等待回复…';
-  try {
-    const r = await call('test', {prompt: $('prompt').value});
-    $('testOut').innerHTML = `<div>${esc(r.reply)}</div><div class="muted">首 token ${r.ttft_ms} ms` +
-      (r.chunks_per_s ? ` · 约 ${r.chunks_per_s} chunk/s` : '') + `</div>`;
-  } catch (e) { $('testOut').textContent = '失败：' + e.message; }
-};
-$('logBtn').onclick = () => refreshLogs();
+function renderRail() {
+  const i = S.info; if (!i) return;
+  $('railStatus').innerHTML = `<span><i class="dot ${i.state}"></i>${esc(STATE_TEXT[i.state] || i.state)}</span>
+    <b title="${esc(titleOf(current()))}">${esc(current() ? titleOf(current()) : '没有加载模型')}</b>`;
+  const active = (S.models?.models || []).filter(m => ['downloading', 'queued', 'verifying'].includes(m.download?.state)).length;
+  $('dlBadge').textContent = active ? `${active} 个下载中` : '';
+}
+document.querySelector('.nav').addEventListener('click', e => {
+  const b = e.target.closest('button[data-page]'); if (b) go(b.dataset.page);
+});
+function go(page) {
+  S.page = page; notice('');
+  document.querySelectorAll('.nav button').forEach(b => b.setAttribute('aria-current', b.dataset.page === page ? 'page' : 'false'));
+  $('page').innerHTML = '';
+  render(true);
+  if (page === 'service') { loadConfig(S.cfgModel || current() || firstInstalled()); refreshLogs(); }
+  if (page === 'chat') loadChat();
+  if (page === 'monitor') loadMetrics();
+  if (page === 'bench') loadBench();
+}
+const firstInstalled = () => (S.models?.models || []).find(m => m.installed)?.id || null;
+function render(full) {
+  renderRail();
+  ({models: renderModels, service: renderService, chat: renderChat, monitor: renderMonitor, bench: renderBench})[S.page](full);
+  applyArmed();
+}
 
+// ══ 模型 ════════════════════════════════════════════════════════════════
+function renderModels(full) {
+  const M = S.models; if (!M) return;
+  if (full || !$('page').querySelector('.wrap')) $('head').innerHTML = `<h1>模型</h1>
+    <div class="seg" role="group" aria-label="视图">
+      <button data-tab="local" aria-pressed="${S.modelsTab === 'local'}">本机</button>
+      <button data-tab="market" aria-pressed="${S.modelsTab === 'market'}">推荐模型</button></div>`;
+  const d = M.disk, otherUsed = Math.max(0, d.used_gb - d.models_gb);
+  const w = x => `${Math.max(0, x / d.total_gb * 100)}%`;
+  const disk = `<div class="section"><h2>磁盘</h2>
+    <div class="usage-track" role="img" aria-label="磁盘用量"><i class="u-mine" style="width:${w(d.models_gb)}"></i><i class="u-other" style="width:${w(otherUsed)}"></i></div>
+    <div class="usage-text"><span><span class="key u-mine"></span>模型 <b>${gb(d.models_gb)}</b> GB</span>
+      <span><span class="key u-other"></span>其他 <b>${gb(otherUsed)}</b> GB</span>
+      <span>剩余 <b>${gb(d.free_gb)}</b> GB（共 ${gb(d.total_gb, 0)} GB）</span></div></div>`;
+  const jobs = M.models.filter(m => m.download && ['downloading', 'queued', 'paused', 'verifying', 'error'].includes(m.download.state));
+  const downloads = jobs.length ? `<div class="section"><h2>下载</h2>${jobs.map(dlRow).join('')}</div>` : '';
+  const body = S.modelsTab === 'local' ? localList(M) : marketList(M);
+  $('page').innerHTML = `<div class="wrap">${downloads}${body}${disk}</div>`;
+}
+function dlRow(m) {
+  const j = m.download, st = j.state;
+  const label = {downloading: `${j.pct}%`, queued: `排队中${m.queue_pos ? `，前面还有 ${m.queue_pos} 个` : ''}`,
+                 paused: `已暂停 ${j.pct}%`, verifying: '正在校验', error: '下载失败'}[st];
+  const btns = st === 'downloading' || st === 'queued'
+      ? `<button class="btn sm" data-dl="pause" data-id="${esc(m.id)}">暂停</button>`
+      : st === 'paused' || st === 'error' ? `<button class="btn sm" data-dl="resume" data-id="${esc(m.id)}">${st === 'error' ? '重试' : '继续'}</button>` : '';
+  return `<div class="dl"><div class="dl-top"><b>${esc(m.title)}</b><span class="tag ${st === 'error' ? 'bad' : ''}">${esc(label)}</span>
+      <div class="acts">${btns}${st !== 'verifying' ? `<button class="btn sm quiet danger" data-dl="cancel" data-id="${esc(m.id)}" data-confirm="cancel-${esc(m.id)}">取消</button>` : ''}</div></div>
+    ${st === 'error' ? `<div class="dl-meta"><span class="tag bad">${esc(j.error)}</span></div>` : `
+    <div class="dl-bar${st === 'paused' ? ' paused' : ''}"><i style="width:${j.pct || 0}%"></i></div>
+    <div class="dl-meta"><span>${fmtBytes(j.bytes_done)} / ${fmtBytes(j.bytes_total)}</span>
+      ${st === 'downloading' ? `<span>${j.speed_bps ? (j.speed_bps / 1e6).toFixed(1) + ' MB/s' : '测速中'}</span><span>还需 ${fmtEta(j.eta_s)}</span>` : ''}
+      ${j.file ? `<span>${esc(j.file)}</span>` : ''}</div>`}</div>`;
+}
+function localList(M) {
+  const rows = M.models.filter(m => m.installed);
+  if (!rows.length) return `<div class="section"><p class="sub">这台机器上还没有模型。在「推荐模型」里选一个下载。</p>
+    <button class="btn primary" data-tab="market">看推荐模型</button></div>`;
+  const running = current() && S.info.state !== 'idle' ? current() : null;
+  return `<div class="section"><h2>已下载</h2>
+    <p class="sub">同一时间只运行一个模型。${running ? `现在运行的是 ${esc(titleOf(running))}；切换到别的模型会先把它停掉。` : '现在没有模型在运行。'}</p>
+    <table class="mtable"><thead><tr><th>模型</th><th class="r">磁盘</th><th class="r">运行时内存</th><th>状态</th><th></th></tr></thead><tbody>
+    ${rows.map(m => {
+      const isCur = m.id === running, st = isCur ? S.info.state : 'idle';
+      const action = m.unsupported ? `<span class="tag bad" title="${esc(m.unsupported)}">本机不支持</span>`
+        : isCur ? `<button class="btn sm danger" data-stop="1" data-confirm="stop">停止</button>`
+        : running ? `<button class="btn sm" data-load="${esc(m.id)}" data-confirm="switch-${esc(m.id)}" data-confirm-label="再点一次切换">换这个</button>`
+        : `<button class="btn sm primary" data-load="${esc(m.id)}">启动</button>`;
+      return `<tr><td class="name"><b>${esc(m.title)}</b><span>${esc(m.repo)}</span></td>
+        <td class="r">${gb(m.disk_gb, 2)} GB</td><td class="r">约 ${gb(m.footprint_gb)} GB</td>
+        <td><span class="tag ${isCur && st === 'ready' ? 'ok' : isCur && st === 'error' ? 'bad' : isCur ? 'warn' : ''}">${isCur ? esc(STATE_TEXT[st]) : '—'}</span></td>
+        <td class="acts">${action}${isCur ? '' : `<button class="btn sm quiet danger" data-del="${esc(m.id)}" data-confirm="del-${esc(m.id)}">删除</button>`}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+function marketList(M) {
+  return `<div class="section"><p class="sub">挑过、配好参数的模型。运行时内存是预算加进程开销的估计；整机共 ${gb(M.total_gb)} GB，和感知等服务共用。</p>
+    <table class="mtable"><thead><tr><th>模型</th><th class="r">下载</th><th class="r">运行时内存</th><th>本机</th><th></th></tr></thead><tbody>
+    ${M.models.map(m => {
+      const dl = m.download && ['downloading', 'queued', 'paused', 'verifying'].includes(m.download.state);
+      const fits = m.footprint_gb <= 0.9 * M.total_gb;
+      const tag = m.unsupported ? `<span class="tag bad" title="${esc(m.unsupported)}">不支持</span>`
+        : !fits ? '<span class="tag bad">内存不够</span>' : m.installed ? '<span class="tag ok">已下载</span>' : '<span class="tag">可用</span>';
+      const btn = m.installed ? `<button class="btn sm" data-tab="local">查看</button>`
+        : dl ? `<span class="tag warn">下载中</span>`
+        : `<button class="btn sm${m.unsupported || !fits ? '' : ' primary'}" data-download="${esc(m.id)}" ${m.unsupported || !fits ? 'disabled' : ''}>下载</button>`;
+      return `<tr><td class="name"><b>${esc(m.title)}</b><span>${esc(m.unsupported || m.note || m.repo)}</span></td>
+        <td class="r">${gb(m.size_gb)} GB</td><td class="r">约 ${gb(m.footprint_gb)} GB</td>
+        <td>${tag}</td><td class="acts">${btn}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+$('head').addEventListener('click', e => {
+  const t = e.target.closest('button[data-tab]'); if (t) { S.modelsTab = t.dataset.tab; renderModels(); }
+});
+$('page').addEventListener('click', async e => {
+  const b = e.target.closest('button'); if (!b || S.page !== 'models') return;
+  if (b.dataset.tab) { S.modelsTab = b.dataset.tab; return renderModels(); }
+  if (b.dataset.download) { b.disabled = true; await act(() => call('download', {model: b.dataset.download})); await refresh(true); return renderModels(); }
+  // 启动 / 切换 / 停止都留在本页：状态在这一行里更新，不跳页面
+  if (b.dataset.load) {
+    if (b.dataset.confirm && !confirmTwice(b, b.dataset.confirmLabel)) return;
+    b.disabled = true; await act(() => call('load', {model: b.dataset.load})); S.cfgModel = b.dataset.load;
+    await refresh(true); return renderModels();
+  }
+  if (b.dataset.stop) { if (!confirmTwice(b, '再点一次停止')) return; b.disabled = true; await act(() => call('unload')); await refresh(true); return renderModels(); }
+  if (b.dataset.del) { if (!confirmTwice(b)) return; await act(() => call('delete_files', {model: b.dataset.del})); await refresh(true); return renderModels(); }
+  if (b.dataset.dl) {
+    if (b.dataset.dl === 'cancel' && !confirmTwice(b)) return;
+    await act(() => call('download_' + b.dataset.dl, {model: b.dataset.id}));
+    await refresh(true); renderModels();
+  }
+});
+
+// ══ 服务 ════════════════════════════════════════════════════════════════
+const CFG_BASIC = [
+  ['memory_gb', '内存预算（GB）', 'number', '权重加 KV cache'],
+  ['max_model_len', '上下文长度（token）', 'number', '单次请求最长'],
+  ['max_num_seqs', '最大并发', 'number', '同时处理的请求数'],
+];
+// 下面这些由模型本身决定，注册表里已经配好；只有接入新模型时才需要改
+const CFG_ADVANCED = [
+  ['tool_call_parser', '工具调用格式', 'select', '模型把「调用哪个工具」写成什么格式，要和模型对上，否则工具调用会被当成普通文字'],
+  ['reasoning_parser', '思考内容格式', 'select', '带思考过程的模型才需要；不带的选「不解析」'],
+  ['cudagraph_capture_sizes', 'CUDA graph 批大小', 'text', '空格分隔，如 1 2 4 8。只为这些批大小预编译，越少启动越快'],
+  ['extra_args', '额外 vLLM 参数', 'text', '空格分隔，原样传给 vllm serve'],
+];
+async function loadConfig(id) {
+  if (!id) { S.cfg = null; return renderService(true); }
+  S.cfgModel = id;
+  const r = await act(() => call('config_get', {model: id}));
+  if (r) { S.cfg = r; if (S.page === 'service') renderService(true); }
+}
+function renderService(full) {
+  const i = S.info; if (!i) return;
+  const st = i.state, eng = i.engine || {};
+  if (full || !$('svcStatus')) $('head').innerHTML = `<h1>服务</h1><span class="grow"></span>`;
+  const statusHTML = `<div class="status-big"><i class="dot ${st}"></i>${esc(current() ? `${titleOf(current())} ${STATE_TEXT[st]}` : '没有加载模型')}</div>
+    ${i.message && st !== 'ready' && current() ? `<p class="sub">${esc(i.message)}</p>` : ''}
+    <dl class="status-grid">
+      <dt>接口地址</dt><dd>${esc(i.serving?.base_url || '—')}</dd>
+      <dt>模型名</dt><dd>${esc(current() || '—')}</dd>
+      <dt>运行时长</dt><dd>${st === 'ready' && eng.uptime_s ? fmtEta(Math.round(eng.uptime_s)) : '—'}</dd>
+      <dt>上次加载用时</dt><dd>${eng.load_s ? `${Math.round(eng.load_s)} 秒` : '—'}</dd>
+      <dt>KV cache 容量</dt><dd>${eng.kv_tokens && st !== 'idle' ? `${eng.kv_tokens.toLocaleString('en-US')} token（引擎报告）${kvSessionsText(eng.kv_tokens)}` : '—'}</dd>
+      <dt>推理引擎</dt><dd>vLLM ${esc((i.engine_version || '?').split('+')[0])}</dd>
+    </dl>
+    <div class="actions">
+      ${st === 'idle' || !current() ? `<button class="btn primary" data-svc="start" ${S.cfgModel ? '' : 'disabled'}>启动 ${esc(titleOf(S.cfgModel))}</button>`
+        : `<button class="btn" data-svc="restart">重启</button><button class="btn danger" data-svc="stop" data-confirm="svc-stop">停止</button>`}
+    </div>`;
+  if (full || !$('svcStatus')) {
+    const installed = (S.models?.models || []).filter(m => m.installed && !m.unsupported);
+    $('page').innerHTML = `<div class="wrap">
+      <div class="section" id="svcStatus">${statusHTML}</div>
+      <div class="section"><div class="cfg-head"><h2>启动配置</h2>
+        ${installed.length ? `<select id="cfgModel" class="input" aria-label="配置哪个模型">${installed.map(m => `<option value="${esc(m.id)}" ${m.id === S.cfgModel ? 'selected' : ''}>${esc(m.title)}</option>`).join('')}</select>` : ''}</div>
+        ${S.cfg ? cfgForm(S.cfg) : '<p class="sub">还没有下载任何模型。</p>'}
+      </div>
+      <div class="section"><h2>日志</h2>
+        <div class="logs-bar"><select class="input" id="logLevel" style="width:auto">
+            <option value="">全部级别</option><option value="WARNING" ${S.logLevel === 'WARNING' ? 'selected' : ''}>警告及以上</option>
+            <option value="ERROR" ${S.logLevel === 'ERROR' ? 'selected' : ''}>只看错误</option></select>
+          <input id="logQ" placeholder="搜索日志" value="${esc(S.logQ)}" aria-label="搜索日志"></div>
+        <div class="logs" id="logs" tabindex="0" aria-label="引擎日志">读取中…</div></div></div>`;
+  } else $('svcStatus').innerHTML = statusHTML;
+}
+function cfgField([k, label, type, hint], c) {
+  const v = c.config, changed = new Set(c.overridden);
+  const val = Array.isArray(v[k]) ? v[k].join(' ') : (v[k] ?? '');
+  let input;
+  const opts = c.choices?.[k] || [];
+  if (type === 'select' && opts.length) {
+    const has = opts.some(o => o.value === val);
+    input = `<select data-cfg="${k}"><option value="" ${val ? '' : 'selected'}>不解析</option>
+      ${opts.map(o => `<option value="${esc(o.value)}" ${o.value === val ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+      ${val && !has ? `<option value="${esc(val)}" selected>${esc(val)}（本机 vLLM 不认识）</option>` : ''}</select>`;
+  } else {
+    input = `<input data-cfg="${k}" type="${type === 'select' ? 'text' : type}" value="${esc(val)}" ${type === 'number' ? 'min="1"' : ''}>`;
+  }
+  const d = c.defaults?.[k];
+  const defTxt = changed.has(k) ? `<span class="def">已改，默认 ${d == null || d === '' ? '不设' : esc(Array.isArray(d) ? d.join(' ') : d)}</span>　` : '';
+  return `<label class="field${changed.has(k) ? ' changed' : ''}"><span>${label}</span>${input}<small class="hint">${defTxt}${esc(hint)}</small></label>`;
+}
+// ── KV cache 容量：agent 的前缀能不能留在缓存里 ──────────────────────────
+// 和引擎的算法一致：KV = 预算 - 权重 - 运行余量；token 数 = KV 字节 / 每 token 字节
+S.sessionTokens = 100000;  // agent 一次请求的提示大约多长（系统提示 + 工具 + 历史），可达 100k
+function kvTokensFor(budgetGb, kv) {
+  if (!kv?.bytes_per_token || !(budgetGb > 0)) return null;
+  const bytes = (budgetGb - kv.weights_gib - kv.margin_gib) * 2 ** 30;
+  return bytes > 0 ? Math.floor(bytes / kv.bytes_per_token) : 0;
+}
+function budgetFor(sessions, kv) {
+  return kv.weights_gib + kv.margin_gib + sessions * S.sessionTokens * kv.bytes_per_token / 2 ** 30;
+}
+function kvSessionsText(tokens) {
+  const n = Math.floor(tokens / S.sessionTokens);
+  return `，按一次提示 ${S.sessionTokens.toLocaleString('en-US')} token 算${n >= 1 ? `能同时保住约 ${n} 个会话的缓存` : '一个会话都放不下'}`;
+}
+function kvEstimateHTML(c) {
+  const kv = c.kv; if (!kv?.bytes_per_token) return '';
+  const budget = Number(document.querySelector('[data-cfg="memory_gb"]')?.value) || c.config.memory_gb;
+  const tokens = kvTokensFor(budget, kv), n = Math.floor((tokens || 0) / S.sessionTokens);
+  const ctx = Number(c.config.max_model_len) || 0;
+  const perTok = kv.bytes_per_token >= 1024 ? `${Math.round(kv.bytes_per_token / 1024)} KB` : `${kv.bytes_per_token} B`;
+  const want = Math.max(2, n + 1), need = budgetFor(want, kv);
+  const ctxTooBig = tokens != null && ctx && tokens < ctx;
+  const overCap = need + (S.info?.memory?.overhead_gb || 4.4) > 0.9 * (S.models?.total_gb || 57.8);
+  const result = ctxTooBig
+    ? `<span class="bad-text">上下文 ${ctx.toLocaleString('en-US')} 比 KV cache 还大，这样起不来。</span>预算至少 ${Math.ceil(kv.weights_gib + kv.margin_gib + ctx * kv.bytes_per_token / 2 ** 30)} GB，或上下文降到 ${tokens.toLocaleString('en-US')} 以下。`
+    : S.sessionTokens > ctx && ctx ? `<span class="bad-text">提示长度超过了上下文长度 ${ctx.toLocaleString('en-US')}。</span>`
+    : n >= 1 ? `能同时保住 <b>${n}</b> 个会话的前缀缓存。要保住 ${want} 个，预算约需 ${Math.ceil(need)} GB${overCap ? '（超过整机 90%，装不下）' : ''}。`
+    : `<span class="bad-text">一个会话的前缀都放不下</span>，每次请求都要从头算。预算至少要 ${Math.ceil(budgetFor(1, kv))} GB。`;
+  return `<div class="kv-est" id="kvEst">
+    <div class="kv-cap"><span>KV cache 容量</span><b>${tokens == null ? '—' : tokens.toLocaleString('en-US')}</b><small>token</small>
+      <div class="kv-formula">每 token ${perTok}，预算 ${gb(budget)} GB 减权重 ${gb(kv.weights_gib)} GB 减运行余量 ${gb(kv.margin_gib)} GB</div></div>
+    <label class="inline-field"><span style="margin:0">agent 单次提示</span><input id="sessTok" type="number" min="1000" step="1000" value="${S.sessionTokens}"> token</label>
+    <div class="kv-result">${result}</div>
+    <p class="kv-note">agent 每轮的系统提示加历史是上一轮的前缀；放不下的会话会互相挤掉缓存。N4 上 Qwen3 4B 处理 80k token 的提示，冷启动首 token 88 秒，命中缓存 0.4 秒。</p>
+  </div>`;
+}
+function cfgForm(c) {
+  const v = c.config, changed = new Set(c.overridden);
+  const advChanged = CFG_ADVANCED.some(([k]) => changed.has(k)) || changed.has('enforce_eager');
+  return `<div class="form">${CFG_BASIC.map(f => cfgField(f, c)).join('')}</div>
+    ${kvEstimateHTML(c)}
+    <details class="advanced"${advChanged ? ' open' : ''}><summary>高级设置</summary>
+      <p class="sub" style="margin:8px 0 12px">这些由模型本身决定，推荐模型都已配好，一般不用改；接入新模型时才需要。</p>
+      <div class="form">${CFG_ADVANCED.map(f => cfgField(f, c)).join('')}</div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" data-cfg="enforce_eager" ${v.enforce_eager ? 'checked' : ''}> 不用 CUDA graph（启动最快，生成稍慢）</label>
+    </details>
+    <label class="check" style="margin-top:16px"><input type="checkbox" id="autoload" ${c.autoload ? 'checked' : ''}> 开机自动启动上次的模型</label>
+    <div class="cfg-foot">
+      ${current() === c.model && S.info.state !== 'idle'
+        ? '<button class="btn primary" data-svc="save-restart">保存并重启</button><button class="btn" data-svc="save">只保存</button>'
+        : '<button class="btn primary" data-svc="save">保存</button>'}
+      <span class="muted">整机约占 ${gb(c.footprint_gb)} GB 内存，重启后生效</span>
+      <span class="grow"></span>
+      ${changed.size ? '<button class="btn quiet" data-svc="reset" data-confirm="svc-reset">恢复默认</button>' : ''}</div>`;
+}
+function collectCfg() {
+  const values = {};
+  document.querySelectorAll('[data-cfg]').forEach(el => {
+    const k = el.dataset.cfg;
+    const raw = String(el.value ?? '').trim();
+    values[k] = el.type === 'checkbox' ? el.checked : raw === '' ? null : el.type === 'number' ? Number(raw) : raw;
+  });
+  return values;
+}
+$('page').addEventListener('change', async e => {
+  if (S.page !== 'service') return;
+  if (e.target.id === 'cfgModel') loadConfig(e.target.value);
+  if (e.target.id === 'autoload') await act(() => call('set_autoload', {enabled: e.target.checked}));
+  if (e.target.id === 'logLevel') { S.logLevel = e.target.value; refreshLogs(); }
+});
+let logTimer = null;
+$('page').addEventListener('input', e => {
+  if (S.page === 'service' && S.cfg && (e.target.dataset.cfg === 'memory_gb' || e.target.id === 'sessTok')) {
+    if (e.target.id === 'sessTok') S.sessionTokens = Math.max(1000, Number(e.target.value) || 100000);
+    const old = $('kvEst'), focusSess = e.target.id === 'sessTok';
+    if (old) { old.outerHTML = kvEstimateHTML(S.cfg); if (focusSess) { const i = $('sessTok'); i.focus(); i.setSelectionRange?.(99, 99); } }
+  }
+  if (S.page === 'service' && e.target.id === 'logQ') { S.logQ = e.target.value; clearTimeout(logTimer); logTimer = setTimeout(refreshLogs, 300); }
+});
+$('page').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-svc]'); if (!b || S.page !== 'service') return;
+  const a = b.dataset.svc;
+  if (a === 'stop' && !confirmTwice(b, '再点一次停止')) return;
+  if (a === 'reset' && !confirmTwice(b, '再点一次恢复默认')) return;
+  b.disabled = true;
+  if (a === 'start') await act(() => call('load', {model: S.cfgModel}));
+  if (a === 'restart') await act(() => call('load', {model: current()}));
+  if (a === 'stop') await act(() => call('unload'));
+  if (a === 'save' || a === 'save-restart') {
+    const r = await act(() => call('config_set', {model: S.cfgModel, values: collectCfg()}));
+    if (r) { S.cfg = r; if (a === 'save-restart') await act(() => call('load', {model: S.cfgModel})); }
+  }
+  if (a === 'reset') {
+    const values = Object.fromEntries(S.cfg.overridden.map(k => [k, null]));
+    const r = await act(() => call('config_set', {model: S.cfgModel, values})); if (r) S.cfg = r;
+  }
+  await refresh(true); renderService(true); refreshLogs();
+});
 async function refreshLogs() {
-  try { const r = await call('logs', {lines: 200}); $('logs').textContent = (r.lines || []).join('\n') || '（无日志）';
-        $('logs').scrollTop = $('logs').scrollHeight; } catch (e) { /* 轮询失败不打扰 */ }
-}
-async function refreshAll() {
-  try { renderInfo(await call('info')); } catch (e) { say('读不到状态：' + e.message, true); return; }
-  try { renderModels(await call('models')); } catch (e) { say('读不到模型列表：' + e.message, true); }
+  if (S.page !== 'service') return;
+  try {
+    const r = await call('logs', {lines: 400, level: S.logLevel, q: S.logQ});
+    const el = $('logs'); if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    el.innerHTML = (r.lines || []).map(l => {
+      const lv = /\b(ERROR|CRITICAL)\b|^Traceback/.test(l) ? 'ERROR' : /\bWARN(ING)?\b/.test(l) ? 'WARNING' : /\bDEBUG\b/.test(l) ? 'DEBUG' : 'INFO';
+      return `<span class="l-${lv}">${esc(l)}</span>`;
+    }).join('\n') || (current() ? '没有匹配的日志。' : '服务没有运行，没有日志。');
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  } catch (e) {}
 }
 
+// ══ 对话 ════════════════════════════════════════════════════════════════
+const SEND = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg>';
+const STOP = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg>';
+async function loadChat() {
+  const r = await act(() => call('chat_history'));
+  if (!r || S.page !== 'chat') return;
+  if (!S.streaming) S.chat = r.messages;
+  renderChat(true);
+  if (r.running && !S.streaming) follow(r.running.job, r.running);   // 关页面前在生成的，接着看
+}
+function renderChat(full) {
+  const ready = current() && S.info?.state === 'ready';
+  if (full || !$('clearChat')) {
+    $('head').innerHTML = `<h1>对话</h1><span class="muted" id="chatModel"></span><span class="grow"></span>
+      <button class="btn quiet" id="clearChat" data-confirm="clear-chat">清空对话</button>`;
+  }
+  $('chatModel').textContent = ready ? titleOf(current()) : '';
+  if (!(S.armed && S.armed.key === 'clear-chat')) $('clearChat').disabled = !S.chat.length || S.streaming;
+  if (!full && $('chatScroll')) { updateComposer(); return; }
+  $('page').innerHTML = `<div class="chat-page"><div class="chat-scroll" id="chatScroll"></div>
+    <div class="composer-wrap"><div class="composer">
+      <textarea id="input" rows="1" aria-label="消息"></textarea>
+      <button class="send" id="send" aria-label="发送">${SEND}</button></div></div></div>`;
+  drawMessages(); updateComposer();
+  $('input').addEventListener('input', () => { const t = $('input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; updateComposer(); });
+  $('input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  $('send').onclick = () => send();
+}
+function drawMessages() {
+  const el = $('chatScroll'); if (!el) return;
+  if (!S.chat.length) {
+    el.innerHTML = `<div class="empty"><b>试试本机的模型</b>${current() && S.info.state === 'ready'
+      ? `和 ${esc(titleOf(current()))} 说点什么。对话保存在机器上，下次打开还在。`
+      : '先在「服务」里启动一个模型。'}</div>`;
+    return;
+  }
+  el.innerHTML = `<div class="chat">${S.chat.map((m, n) => m.role === 'user'
+    ? `<div class="user">${esc(m.content)}</div>`
+    : `<div class="bot${m.state === 'error' ? ' err' : ''}" id="msg${n}">${botBody(m)}</div>`).join('')}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+function botBody(m) {
+  if (m.state === 'error') return esc(m.error || '出错了');
+  return `<span class="${m.state === 'running' ? 'caret' : ''}">${esc(m.content || '')}</span>${m.state === 'stopped' ? '<span class="note">已停止</span>' : ''}`;
+}
+function updateComposer() {
+  const t = $('input'); if (!t) return;
+  const ready = current() && S.info?.state === 'ready';
+  t.disabled = !ready && !S.streaming;
+  t.placeholder = ready ? `给 ${titleOf(current())} 发消息…` : '服务没有运行';
+  $('send').innerHTML = S.streaming ? STOP : SEND;
+  $('send').setAttribute('aria-label', S.streaming ? '停止生成' : '发送');
+  $('send').disabled = !S.streaming && (!ready || !t.value.trim());
+}
+$('head').addEventListener('click', async e => {
+  const b = e.target.closest('#clearChat'); if (!b) return;
+  if (!confirmTwice(b, '再点一次清空')) return;
+  const r = await act(() => call('chat_clear'));
+  if (r) { S.chat = []; S.streaming = false; renderChat(true); }
+});
+async function send() {
+  if (S.streaming) { await act(() => call('chat_stop', {job: S.job})); return; }
+  const text = $('input').value.trim(); if (!text) return;
+  $('input').value = ''; $('input').style.height = 'auto';
+  S.chat.push({role: 'user', content: text});
+  const r = await act(() => call('chat_start', {text}));
+  if (!r) { S.chat.pop(); drawMessages(); return; }
+  follow(r.job, null);
+}
+async function follow(job, first) {
+  S.streaming = true; S.job = job;
+  const turn = {role: 'assistant', content: first?.text || '', state: 'running'};
+  S.chat.push(turn); drawMessages(); updateComposer();
+  let tf = first?.text_len || 0;
+  try {
+    for (;;) {
+      const p = await call('chat_poll', {job, text_from: tf});
+      turn.content += p.text; tf = p.text_len;
+      if (p.state !== 'running') { turn.state = p.state; turn.error = p.error; break; }
+      const el = $('msg' + (S.chat.length - 1));
+      if (el) { el.innerHTML = botBody(turn); $('chatScroll').scrollTop = 1e9; }
+      await new Promise(r => setTimeout(r, 250));
+    }
+  } catch (e) { turn.state = 'error'; turn.error = e.message; }
+  S.streaming = false;
+  if (S.page === 'chat') { drawMessages(); updateComposer(); renderChat(false); $('input')?.focus(); }
+}
+
+// ══ 性能测试 ════════════════════════════════════════════════════════════
+async function loadBench() {
+  const [st, list] = [await act(() => call('bench_status')), await act(() => call('bench_list'))];
+  if (st) S.benchRun = st.run;
+  if (list) S.benchRuns = list.runs;
+  if (S.page === 'bench') renderBench(true);
+}
+const benchKey = r => ({
+  ttftShort: r.results.ttft?.[0]?.ttft_ms, ttftLong: r.results.ttft?.at(-1)?.ttft_ms,
+  longTokens: r.results.ttft?.at(-1)?.prompt_tokens, prefill: r.results.ttft?.at(-1)?.prefill_tps,
+  decode: r.results.decode?.tps, itl99: r.results.decode?.itl_p99_ms,
+  conc: r.results.concurrency?.at(-1)?.total_tps, concN: r.results.concurrency?.at(-1)?.n,
+  warm: r.results.prefix_cache?.warm_ttft_ms, cold: r.results.prefix_cache?.cold_ttft_ms,
+  speedup: r.results.prefix_cache?.speedup,
+});
+function renderBench(full) {
+  if (full || !$('benchTop')) $('head').innerHTML = `<h1>性能测试</h1><span class="grow"></span>`;
+  const run = S.benchRun, runs = S.benchRuns || [], ready = current() && S.info?.state === 'ready';
+  const running = run?.state === 'running';
+  const top = running
+    ? `<div class="dl" style="border:0;padding:0"><div class="dl-top"><b>正在测 ${esc(run.title)}</b><span class="tag">${run.step} / ${run.steps}　${esc(run.label)}</span>
+        <div class="acts"><button class="btn sm" data-bench="stop">停止测试</button></div></div>
+        <div class="dl-bar"><i style="width:${Math.round(run.step / run.steps * 100)}%"></i></div>
+        <div class="dl-meta"><span>测试期间是真实请求，服务会变慢。</span></div></div>`
+    : `<p class="sub">用同一套请求测当前运行的模型：短 / 长提示的首 token 延迟、单路生成速度、1 / 4 / 8 路并发的总吞吐，
+        以及 agent 场景最关键的前缀缓存（同一段系统提示 + 历史，只换结尾时首 token 快多少）。
+        结果连同当时的配置一起保存，换模型或改配置后再测一次，就能放在一起比。</p>
+       ${run?.state === 'error' ? `<p class="tag bad" style="margin:0 0 10px">上次测试失败：${esc(run.error)}</p>` : ''}
+       <button class="btn primary" data-bench="start" ${ready ? '' : 'disabled'}>${ready ? `测试 ${esc(titleOf(current()))}` : '先启动一个模型'}</button>
+       <span class="muted" style="margin-left:10px">大约 1–3 分钟</span>`;
+  if (!full && $('benchTop')) { $('benchTop').innerHTML = top; return; }
+  // 默认选最近两次 —— 要等记录取回来再定，不然第一次渲染时就定成了空集
+  if (!S.benchSel && S.benchRuns) S.benchSel = new Set(runs.slice(0, 2).map(r => r.id));
+  const sel = S.benchSel || new Set();
+  const picked = runs.filter(r => sel.has(r.id));
+  $('page').innerHTML = `<div class="wrap">
+    <div class="section" id="benchTop">${top}</div>
+    <div class="section"><h2>测试记录</h2>${runs.length ? `
+      <p class="sub">勾选几次结果，在下面并排比较。</p>
+      <table class="mtable btable"><thead><tr><th></th><th>时间</th><th>模型和配置</th><th class="r">首 token（短）</th><th class="r">首 token（长）</th><th class="r">缓存命中后</th><th class="r">单路生成</th><th class="r">并发总吞吐</th><th></th></tr></thead><tbody>
+      ${runs.map(r => { const k = benchKey(r), c = r.config || {};
+        return `<tr><td><input type="checkbox" data-pick="${esc(r.id)}" ${sel.has(r.id) ? 'checked' : ''} aria-label="选中这次结果"></td>
+          <td>${fmtTime(r.ts, true)}</td>
+          <td class="name"><b>${esc(r.title)}</b><span>预算 ${gb(c.memory_gb, 0)} GB，上下文 ${c.max_model_len}，并发 ${c.max_num_seqs}，vLLM ${esc((r.engine_version || '').split('+')[0])}</span></td>
+          <td class="r">${fmtNum(k.ttftShort)} ms</td><td class="r">${fmtNum(k.ttftLong)} ms</td>
+          <td class="r" title="${k.cold != null ? `同一段约 3k token 前缀：冷 ${fmtNum(k.cold)} ms` : ''}">${k.warm == null ? '—' : `${fmtNum(k.warm)} ms`}${k.speedup ? `<br><span class="muted">快 ${k.speedup} 倍</span>` : ''}</td>
+          <td class="r">${fmtNum(k.decode)} token/秒</td><td class="r">${fmtNum(k.conc)} token/秒</td>
+          <td class="acts"><button class="btn sm quiet danger" data-bench-del="${esc(r.id)}" data-confirm="bdel-${esc(r.id)}">删除</button></td></tr>`; }).join('')}
+      </tbody></table>` : '<p class="sub">还没有测试记录。</p>'}</div>
+    ${picked.length >= 2 ? `<div class="section"><h2>对比</h2>${compareBars(picked)}</div>` : ''}</div>`;
+}
+// 每个指标一组横条：同一个指标里谁好一眼可见（越低越好的会注明）。单一指标、单一颜色，身份靠行首文字。
+function compareBars(runs) {
+  const metrics = [['ttftShort', '首 token 延迟（短提示）', 'ms', true], ['ttftLong', '首 token 延迟（长提示）', 'ms', true],
+                   ['decode', '单路生成速度', 'token/秒', false], ['conc', '并发总吞吐', 'token/秒', false],
+                   ['prefill', '预填充速度', 'token/秒', false],
+                   ['warm', '命中前缀缓存后的首 token 延迟', 'ms', true]];
+  const label = r => `${titleOf(r.model) || r.title}　${fmtTime(r.ts, true)}`;
+  return metrics.map(([k, name, unit, lowerBetter]) => {
+    const vals = runs.map(r => benchKey(r)[k]).filter(v => v != null);
+    if (!vals.length) return '';
+    const max = Math.max(...vals), best = lowerBetter ? Math.min(...vals) : max;
+    return `<div class="cmp"><h3>${name}<span class="muted">（${unit}，${lowerBetter ? '越低越好' : '越高越好'}）</span></h3>
+      ${runs.map(r => { const v = benchKey(r)[k];
+        return `<div class="cmp-row"><span class="cmp-label">${esc(label(r))}</span>
+          <span class="cmp-track"><i style="width:${v == null ? 0 : Math.max(2, v / max * 100)}%"></i></span>
+          <span class="cmp-val${v === best ? ' best' : ''}">${v == null ? '—' : fmtNum(v)}</span></div>`; }).join('')}</div>`;
+  }).join('');
+}
+$('page').addEventListener('click', async e => {
+  if (S.page !== 'bench') return;
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.bench === 'start') { b.disabled = true; const r = await act(() => call('bench_start')); if (r) S.benchRun = r.run; renderBench(false); }
+  if (b.dataset.bench === 'stop') { await act(() => call('bench_stop')); }
+  if (b.dataset.benchDel) { if (!confirmTwice(b)) return; const r = await act(() => call('bench_delete', {id: b.dataset.benchDel})); if (r) { S.benchRuns = r.runs; renderBench(true); } }
+});
+$('page').addEventListener('change', e => {
+  if (S.page !== 'bench' || !e.target.dataset.pick) return;
+  if (!S.benchSel) S.benchSel = new Set();
+  e.target.checked ? S.benchSel.add(e.target.dataset.pick) : S.benchSel.delete(e.target.dataset.pick);
+  renderBench(true);
+});
+
+// ══ 监控 ════════════════════════════════════════════════════════════════
+const RANGES = [['15m', '15 分钟'], ['1h', '1 小时'], ['6h', '6 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['30d', '30 天']];
+// 每张图一个量纲，不用双轴；同量纲的最多三条线（dataviz 调色板前三个槽位）
+const CHARTS = [
+  {title: '生成速度', unit: 'token/秒', series: [['gen_tps', '生成', 's1'], ['prompt_tps', '输入', 's2']]},
+  {title: '请求', unit: '个', series: [['running', '处理中', 's1'], ['waiting', '排队', 's2']]},
+  {title: 'KV cache 占用', unit: '%', max: 100, series: [['kv_pct', 'KV cache', 's1']]},
+  {title: '前缀缓存命中率', unit: '%', max: 100, series: [['prefix_hit_pct', '命中率', 's1']]},
+  {title: '内存', unit: 'GB', series: [['mem_used_gb', '整机已用', 's1'], ['proc_gb', '推理进程', 's2']]},
+  {title: 'GPU 利用率', unit: '%', max: 100, series: [['gpu_util', 'GPU', 's1']]},
+  {title: '温度', unit: '°C', series: [['temp_gpu', 'GPU', 's1'], ['temp_cpu', 'CPU', 's2'], ['temp_tj', '结温', 's3']]},
+  {title: 'GPU 功耗', unit: 'W', series: [['gpu_power_w', 'GPU', 's1']]},
+  {title: '网关请求与错误', unit: '次/秒', series: [['req_rate', '请求', 's1'], ['err_rate', '5xx 错误', 's2']]},
+];
+async function loadMetrics() {
+  document.querySelectorAll('.chart').forEach(c => c.classList.add('loading'));    // 刷新时保留旧图
+  const m = await act(() => call('metrics', {range: S.range}));
+  const ev = await act(() => call('events', {range: S.range}));
+  if (m) S.metrics = m;
+  if (ev) S.events = ev.events;
+  // 鼠标正停在图上看数值时不重画（重画会冲掉提示框），离开后补上
+  if (S.page === 'monitor') { if (S.hovering) S.stale = true; else renderMonitor(); }
+}
+function lastVal(key) {
+  const a = S.metrics?.series?.[key] || [];
+  for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i];
+  return null;
+}
+function renderMonitor() {
+  if (S.page === 'monitor') $('head').innerHTML = `<h1>监控</h1><span class="grow"></span>
+    <div class="seg" role="group" aria-label="时间范围">${RANGES.map(([k, l]) =>
+      `<button data-range="${k}" aria-pressed="${S.range === k}">${l}</button>`).join('')}</div>`;
+  const M = S.metrics;
+  if (!M) { $('page').innerHTML = '<div class="wrap"><p class="sub">读取中…</p></div>'; return; }
+  const tiles = [['生成速度', lastVal('gen_tps'), 'token/秒', 0], ['处理中的请求', lastVal('running'), '', 0],
+                 ['KV cache', lastVal('kv_pct'), '%', 1], ['前缀缓存命中', lastVal('prefix_hit_pct'), '%', 0],
+                 ['整机内存已用', lastVal('mem_used_gb'), 'GB', 1],
+                 ['GPU 温度', lastVal('temp_gpu'), '°C', 0], ['GPU 功耗', lastVal('gpu_power_w'), 'W', 1]];
+  $('page').innerHTML = `<div class="wrap" style="max-width:none">
+    <div class="tiles">${tiles.map(([l, v, u, d]) => `<div class="tile"><span>${l}</span><b>${v == null ? '—' : (+v).toFixed(d)}</b><small>${u}</small></div>`).join('')}</div>
+    <div class="charts">${CHARTS.map((c, n) => `<div class="chart" id="c${n}"><h3>${c.title}<span class="muted" style="font-weight:400">（${c.unit}）</span></h3>
+      <div class="legend">${c.series.length > 1 ? c.series.map(([, l, col]) => `<span><i style="background:var(--${col})"></i>${l}</span>`).join('') : ''}</div>
+      <div class="plot"></div></div>`).join('')}</div>
+    <div class="section"><h2>错误</h2>${S.events.length ? `<div class="events">${S.events.map(e =>
+      `<div class="event"><span class="muted">${fmtTime(e.ts, true)}</span><span class="src lv">${esc({engine: '引擎', download: '下载', gateway: '网关'}[e.source] || e.source)}</span><span class="msg">${esc(e.message)}</span></div>`).join('')}</div>`
+      : '<p class="sub">这段时间没有错误。</p>'}</div>
+    <div class="section"><button class="btn quiet" id="toggleTable" aria-expanded="${S.showTable}">${S.showTable ? '收起数据表' : '以表格查看数据'}</button>
+      ${S.showTable ? dataTable() : ''}</div></div>`;
+  CHARTS.forEach((c, n) => drawChart($('c' + n).querySelector('.plot'), c, M));
+}
+function fmtTime(ts, withDate) {
+  const d = new Date(ts * 1000), p = n => String(n).padStart(2, '0');
+  const t = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return withDate ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${t}` : t;
+}
+function niceMax(v) {
+  if (!(v > 0)) return 1;
+  const e = Math.pow(10, Math.floor(Math.log10(v))), f = v / e;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * e;
+}
+function fmtNum(v) { return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'K' : v >= 10 ? Math.round(v) : +(+v).toFixed(1); }
+function drawChart(host, c, M) {
+  const ts = M.ts, n = ts.length;
+  const cols = c.series.map(([k]) => M.series[k] || []);
+  const vals = cols.flat().filter(v => v != null);
+  if (!n || !vals.length) { host.innerHTML = '<div class="nodata">这段时间没有数据</div>'; return; }
+  const W = Math.max(280, host.clientWidth || 330), H = 150, L = 34, R = 8, T = 6, B = 20;
+  const max = c.max || niceMax(Math.max(...vals) * 1.1);
+  const t0 = M.start, t1 = M.end;
+  const x = t => L + (t - t0) / (t1 - t0) * (W - L - R);
+  const y = v => T + (1 - v / max) * (H - T - B);
+  const ticksY = [0, max / 2, max];
+  const ticksX = [0, 1, 2, 3].map(i => t0 + (t1 - t0) * i / 3);
+  const multiDay = t1 - t0 > 86400;
+  const path = col => { let d = '', on = false;
+    col.forEach((v, i) => { if (v == null) { on = false; return; } d += `${on ? 'L' : 'M'}${x(ts[i]).toFixed(1)},${y(v).toFixed(1)}`; on = true; });
+    return d; };
+  const area = c.series.length === 1 ? (() => { const col = cols[0]; let d = '', seg = [];
+    const flush = () => { if (seg.length > 1) d += `M${x(ts[seg[0]])},${y(0)}` + seg.map(i => `L${x(ts[i]).toFixed(1)},${y(col[i]).toFixed(1)}`).join('') + `L${x(ts[seg.at(-1)])},${y(0)}Z`; seg = []; };
+    col.forEach((v, i) => v == null ? flush() : seg.push(i)); flush(); return d; })() : '';
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" tabindex="0" role="img" aria-label="${esc(c.title)}，${esc(c.unit)}，按时间；左右方向键查看各时刻的值">
+    ${ticksY.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" stroke-width="1"/>
+      <text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${fmtNum(v)}</text>`).join('')}
+    ${ticksX.map((t, i) => `<text x="${x(t)}" y="${H - 4}" text-anchor="${i === 0 ? 'start' : i === 3 ? 'end' : 'middle'}" font-size="11" fill="var(--muted)">${fmtTime(t, multiDay)}</text>`).join('')}
+    ${area ? `<path d="${area}" fill="var(--${c.series[0][2]})" opacity=".1"/>` : ''}
+    ${c.series.map(([, , col], i) => `<path d="${path(cols[i])}" fill="none" stroke="var(--${col})" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`).join('')}
+    <line class="xh" y1="${T}" y2="${H - B}" stroke="var(--muted)" stroke-width="1" visibility="hidden"/>
+    ${c.series.map(([, , col]) => `<circle class="pt" r="4" fill="var(--${col})" stroke="var(--bg)" stroke-width="2" visibility="hidden"/>`).join('')}
+    <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent"/></svg><div class="tip" hidden></div>`;
+  const svg = host.querySelector('svg'), tip = host.querySelector('.tip'), xh = svg.querySelector('.xh'), pts = svg.querySelectorAll('.pt');
+  let cur = null;
+  const show = i => {
+    cur = i; const px = x(ts[i]);
+    xh.setAttribute('x1', px); xh.setAttribute('x2', px); xh.setAttribute('visibility', 'visible');
+    c.series.forEach((s, k) => { const v = cols[k][i];
+      pts[k].setAttribute('visibility', v == null ? 'hidden' : 'visible'); if (v != null) { pts[k].setAttribute('cx', px); pts[k].setAttribute('cy', y(v)); } });
+    tip.hidden = false;
+    tip.innerHTML = `<div class="t">${fmtTime(ts[i], true)}</div>` + c.series.map(([, l, col], k) => {
+      const v = cols[k][i]; return `<div class="r"><i style="background:var(--${col})"></i><b>${v == null ? '—' : fmtNum(v)}</b><span>${esc(l)}</span></div>`; }).join('');
+    const left = px * host.clientWidth / W;
+    tip.style.left = Math.min(Math.max(0, left + 12), host.clientWidth - tip.offsetWidth) + 'px';
+  };
+  const hide = () => { cur = null; tip.hidden = true; xh.setAttribute('visibility', 'hidden'); pts.forEach(p => p.setAttribute('visibility', 'hidden')); };
+  svg.addEventListener('pointermove', e => {
+    const r = svg.getBoundingClientRect(), vx = (e.clientX - r.left) / r.width * W;
+    const t = t0 + (vx - L) / (W - L - R) * (t1 - t0);
+    let best = 0; ts.forEach((tt, i) => { if (Math.abs(tt - t) < Math.abs(ts[best] - t)) best = i; });
+    show(best);
+  });
+  svg.addEventListener('pointerenter', () => { S.hovering = true; });
+  svg.addEventListener('pointerleave', () => { hide(); S.hovering = false; if (S.stale) { S.stale = false; renderMonitor(); } });
+  svg.addEventListener('blur', hide);
+  svg.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); show(Math.max(0, Math.min(n - 1, (cur ?? n - 1) + (e.key === 'ArrowRight' ? 1 : -1)))); }
+    if (e.key === 'Escape') hide();
+  });
+}
+function dataTable() {
+  const M = S.metrics, cols = CHARTS.flatMap(c => c.series.map(([k, l]) => [k, c.series.length > 1 ? `${c.title}（${l}）` : c.title]));
+  const rows = M.ts.map((t, i) => [t, i]).reverse();
+  return `<div class="table-wrap"><table class="data-table"><thead><tr><th>时间</th>${cols.map(([, l]) => `<th>${esc(l)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(([t, i]) => `<tr><td>${fmtTime(t, true)}</td>${cols.map(([k]) => { const v = M.series[k][i]; return `<td>${v == null ? '—' : fmtNum(v)}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+$('head').addEventListener('click', e => {
+  const b = e.target.closest('button[data-range]'); if (!b) return;
+  S.range = b.dataset.range; renderMonitor(); loadMetrics();
+});
+$('page').addEventListener('click', e => {
+  if (e.target.id === 'toggleTable') { S.showTable = !S.showTable; renderMonitor(); }
+});
+
+// ── 轮询 ────────────────────────────────────────────────────────────────
+async function refresh(withModels) {
+  S.info = await call('info');
+  if (withModels || !S.models) S.models = await call('models');
+  if (!S.cfgModel) S.cfgModel = current() || firstInstalled();
+}
+let tick = 0;
+async function poll() {
+  tick++;
+  try {
+    const busy = (S.models?.models || []).some(m => ['downloading', 'queued', 'verifying'].includes(m.download?.state));
+    if (!S.streaming) {
+      await refresh(busy || (S.page === 'models' && tick % 3 === 0) || tick % 10 === 0);
+      // 有按钮在等「再点一次确认」时不重画，不然确认态被冲掉
+      if (S.page !== 'monitor') render(false);       // 监控页只在取到新数据时重画
+      if (S.page === 'service' && tick % 2 === 0) refreshLogs();
+      if (S.page === 'bench' && S.benchRun?.state === 'running') await loadBench();
+    }
+    const every = {'15m': 5, '1h': 5, '6h': 15}[S.range] || 30;    // 按范围决定多久重取（每 tick 2 秒）
+    if (S.page === 'monitor' && tick % every === 0) loadMetrics();
+  } catch (e) { notice('读不到卡片状态：' + e.message); }
+  setTimeout(poll, 2000);
+}
 window.addEventListener('message', async event => {
   if (port || event.source !== parent || event.data?.protocol !== PROTOCOL || !event.ports[0]) return;
   port = event.ports[0];
@@ -233,20 +961,10 @@ window.addEventListener('message', async event => {
     const {id, result, error} = ev.data || {};
     const p = pending.get(id); if (!p) return;
     pending.delete(id); clearTimeout(p.timer);
-    error ? p.reject(new Error(typeof error === 'string' ? error : (error.message || JSON.stringify(error))))
-          : p.resolve(result);
+    error ? p.reject(new Error(typeof error === 'string' ? error : (error.message || JSON.stringify(error)))) : p.resolve(result);
   };
-  await refreshAll(); await refreshLogs();
-  let tick = 0;
-  const poll = async () => {
-    tick++;
-    try { renderInfo(await call('info')); } catch (e) {}
-    const st = info?.state;
-    const downloading = !!info?.download && info.download.state === 'downloading';
-    if (downloading || tick % 5 === 0) { try { renderModels(await call('models')); } catch (e) {} }
-    if (st === 'loading' || st === 'error' || tick % 5 === 0) await refreshLogs();
-    setTimeout(poll, 2000);
-  };
+  try { await refresh(true); } catch (e) { notice('读不到卡片状态：' + e.message); }
+  go('models');
   setTimeout(poll, 2000);
 });
 </script>

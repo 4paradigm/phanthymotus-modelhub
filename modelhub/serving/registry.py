@@ -11,7 +11,7 @@ size/SHA256、以及起服务需要的参数。加一个模型是加一行，不
 
 文件为什么要钉 SHA256：LLM 权重动辄十几 GB，在 Thor 上走 ModelScope 要下几十分钟。
 一个截断的 shard 能让 vLLM 起到一半才报错，读起来像引擎问题。钉死之后，下载器
-（perception 的 model_downloader.ensure_verified_bundle）在落盘前就会拒绝它。
+（serving/downloads.py）在落盘前就会拒绝它。
 """
 
 from __future__ import annotations
@@ -59,8 +59,13 @@ class ModelSpec:
     def size_bytes(self) -> int:
         return sum(int(m["size"]) for m in self.files.values())
 
+    @property
+    def weights_bytes(self) -> int:
+        """权重文件（safetensors）的大小 —— 加载后大致就是它在内存里占的。"""
+        return sum(int(m["size"]) for n, m in self.files.items() if n.endswith(".safetensors"))
+
     def sources(self) -> list[str]:
-        """model_downloader 认的源模板列表（带 {file} 占位）。"""
+        """下载源模板列表（带 {file} 占位）。"""
         return [f"{MODELSCOPE_API}/{self.repo}/repo?Revision={self.revision}&FilePath={{file}}"]
 
     def to_public(self) -> dict:

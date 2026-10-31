@@ -17,6 +17,7 @@ from __future__ import annotations
 import collections
 import json
 import logging
+import re
 import os
 import signal
 import subprocess
@@ -79,13 +80,68 @@ def memory_fraction(budget_gb: float, total_gb: float,
     return round(max(budget_gb / total_gb, 0.02), 4)
 
 
+# 预算里除权重和 KV cache 之外要留的：CUDA 上下文等非 torch 部分 ~2.1 GB、激活峰值 0.4–0.7 GB、
+# CUDA graph ~0.6 GB（Thor 上 Qwen3-0.6B 实测）。
+NON_KV_MARGIN_GB = 2.5
+
+
+def kv_cache_bytes(budget_gb: float, weights_bytes: int) -> int:
+    """预算 - 权重 - 余量 = 给 KV cache 的字节数。
+
+    为什么不让 vLLM 自己算：它的算法是「profile 前后 CUDA 空闲内存的差」，而 Thor 上
+    CUDA 的空闲内存就是内核的 MemFree，不算 page cache。profile 期间内核回收 page
+    cache，「空闲」反而变多，vLLM 直接断言失败 —— N4 上刚做完一次镜像构建（几十 GB
+    的磁盘读写）就启动 Qwen3 4B，实测必现。下完模型紧接着加载也是同样的处境。
+    """
+    kv = budget_gb - weights_bytes / 2**30 - NON_KV_MARGIN_GB
+    if kv < 0.5:
+        raise ValueError(f"内存预算 {budget_gb:.1f} GB 放不下：权重约 {weights_bytes / 2**30:.1f} GB，"
+                         f"另需约 {NON_KV_MARGIN_GB} GB 运行开销，KV cache 至少 0.5 GB")
+    return int(kv * 2**30)
+
+
+_DTYPE_BYTES = {"bfloat16": 2, "float16": 2, "half": 2, "float32": 4, "float": 4,
+                "fp8": 1, "fp8_e4m3": 1, "fp8_e5m2": 1}
+
+
+def kv_bytes_per_token(config: dict, kv_cache_dtype: str | None = None) -> int | None:
+    """一个 token 在 KV cache 里占多少字节：2（K 和 V）× 全注意力层数 × KV 头数 × 头维度 × 精度。
+
+    读模型自己的 config.json。多模态模型的语言部分在 text_config 里；混合注意力的模型
+    （Qwen3.5：每 4 层只有 1 层是全注意力，其余是线性注意力，状态大小与长度无关）只算
+    full_attention 那几层。算不出来就返回 None，页面上不给估计。
+    """
+    c = config.get("text_config") or config
+    try:
+        layers = int(c["num_hidden_layers"])
+        types = c.get("layer_types")
+        if isinstance(types, list) and types:
+            layers = sum(1 for t in types if t == "full_attention")
+        heads = int(c.get("num_key_value_heads") or c["num_attention_heads"])
+        head_dim = int(c.get("head_dim") or int(c["hidden_size"]) // int(c["num_attention_heads"]))
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    dtype = (kv_cache_dtype if kv_cache_dtype not in (None, "", "auto")
+             else c.get("torch_dtype") or c.get("dtype") or config.get("torch_dtype") or "bfloat16")
+    return 2 * layers * heads * head_dim * _DTYPE_BYTES.get(str(dtype).lower(), 2)
+
+
 def build_command(model_path: str, served_name: str, port: int, serve: dict,
                   budget_gb: float, total_gb: float, executable: str = "vllm",
-                  overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB) -> list[str]:
+                  overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB,
+                  weights_bytes: int | None = None) -> list[str]:
+    frac = memory_fraction(budget_gb, total_gb, overhead_gb)      # 也做「不超过整机 90%」的检查
     cmd = [executable, "serve", model_path,
            "--served-model-name", served_name,
-           "--host", "127.0.0.1", "--port", str(port),
-           "--gpu-memory-utilization", str(memory_fraction(budget_gb, total_gb, overhead_gb))]
+           "--host", "127.0.0.1", "--port", str(port)]
+    if weights_bytes:
+        # KV cache 直接给定（跳过 vLLM 的显存 profiling，见 kv_cache_bytes）。此时
+        # gpu-memory-utilization 只剩启动时那道「比例 × 总量 ≤ CUDA 空闲」的检查在用，
+        # 而 CUDA 空闲 = MemFree，page cache 多时只有 1 GB 上下 —— 压到最低让它别挡路。
+        cmd += ["--kv-cache-memory-bytes", str(kv_cache_bytes(budget_gb, weights_bytes)),
+                "--gpu-memory-utilization", "0.01"]
+    else:
+        cmd += ["--gpu-memory-utilization", str(frac)]
     if serve.get("max_model_len"):
         cmd += ["--max-model-len", str(int(serve["max_model_len"]))]
     if serve.get("tool_call_parser"):
@@ -130,6 +186,31 @@ def cache_env(cache_dir: str) -> dict:
     }
 
 
+# vLLM 的日志带终端颜色码（`\x1b[1;36m(APIServer pid=139)\x1b[0;0m INFO ...`），原样显示在
+# 运维页上就是一串方框；进程前缀 `(APIServer pid=139)` 对看日志的人也没有用。
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_PROC_PREFIX = re.compile(r"^\((?:APIServer|EngineCore[^)]*) pid=\d+\)\s*")
+LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+_KV_SIZE = re.compile(r"GPU KV cache size: ([\d,]+) tokens")
+_OWN_POLLS = re.compile(r'"GET /(metrics|health) HTTP/1\.[01]" 200')
+_LEVEL = re.compile(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\b")
+
+
+def clean_log_line(line: str) -> str:
+    return _PROC_PREFIX.sub("", _ANSI.sub("", line)).rstrip()
+
+
+def log_level(line: str) -> str:
+    """一行日志的级别；Traceback 和异常行按 ERROR 算，认不出的按 INFO。"""
+    m = _LEVEL.search(line[:80])
+    if m:
+        lv = m.group(1)
+        return {"WARN": "WARNING", "CRITICAL": "ERROR"}.get(lv, lv)
+    if line.startswith(("Traceback", "  File ")) or "Error:" in line[:120]:
+        return "ERROR"
+    return "INFO"
+
+
 class VLLMEngine:
     """一个模型、一个进程、一个内部端口。换模型 = 停掉这个、起一个新的。"""
 
@@ -137,6 +218,7 @@ class VLLMEngine:
                  budget_gb: float, total_gb: float, load_timeout_s: float = 1800.0,
                  executable: str = "vllm", log_lines: int = 500,
                  overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB, cache_dir: str | None = None,
+                 weights_bytes: int | None = None,
                  popen=subprocess.Popen, env: dict | None = None):
         self.model_id = model_id
         self.port = port
@@ -144,7 +226,7 @@ class VLLMEngine:
         self.budget_gb = budget_gb
         self.footprint_gb = footprint_gb(budget_gb, overhead_gb)
         self.command = build_command(model_path, model_id, port, serve, budget_gb,
-                                     total_gb, executable, overhead_gb)
+                                     total_gb, executable, overhead_gb, weights_bytes)
         self._load_timeout_s = load_timeout_s
         self._popen = popen
         self._env = {**cache_env(cache_dir), **(env or {})} if cache_dir else dict(env or {})
@@ -156,6 +238,7 @@ class VLLMEngine:
         self._ready_at = 0.0
         self._stop_requested = threading.Event()
         self._logs: collections.deque[str] = collections.deque(maxlen=log_lines)
+        self.kv_tokens: int | None = None       # 引擎启动后自己报告的 KV cache 容量
 
     # ── 对外 ────────────────────────────────────────────────────────────────
 
@@ -209,7 +292,7 @@ class VLLMEngine:
             return {
                 "model": self.model_id, "state": self._state, "error": self._error,
                 "base_url": self.base_url, "budget_gb": self.budget_gb,
-                "footprint_gb": self.footprint_gb,
+                "footprint_gb": self.footprint_gb, "kv_tokens": self.kv_tokens,
                 "pid": self._proc.pid if self._proc else None,
                 "uptime_s": round(now - self._ready_at, 1) if self._state == READY else 0,
                 "load_s": round((self._ready_at or now) - self._started_at, 1)
@@ -217,14 +300,27 @@ class VLLMEngine:
                 "last_log": self._logs[-1] if self._logs else "",
             }
 
+    def pgid(self) -> int | None:
+        """推理进程组号（start_new_session，所以等于 vLLM 主进程 pid）；监控按它汇总内存。"""
+        with self._lock:
+            return self._proc.pid if self._proc else None
+
     @property
     def state(self) -> str:
         with self._lock:
             return self._state
 
-    def logs(self, lines: int = 200) -> list[str]:
+    def logs(self, lines: int = 200, level: str = "", query: str = "") -> list[str]:
+        """最近的日志。level 只保留该级别及以上；query 按子串过滤（不区分大小写）。"""
         with self._lock:
-            return list(self._logs)[-max(1, min(int(lines), self._logs.maxlen)):]
+            out = list(self._logs)
+        if level:
+            floor = LEVELS.index(level.upper()) if level.upper() in LEVELS else 0
+            out = [l for l in out if LEVELS.index(log_level(l)) >= floor]
+        if query:
+            q = query.lower()
+            out = [l for l in out if q in l.lower()]
+        return out[-max(1, min(int(lines), self._logs.maxlen)):]
 
     # ── 内部 ────────────────────────────────────────────────────────────────
 
@@ -235,7 +331,12 @@ class VLLMEngine:
 
     def _pump_logs(self, proc) -> None:
         for raw in iter(proc.stdout.readline, b""):
-            line = raw.decode("utf-8", "replace").rstrip()
+            line = clean_log_line(raw.decode("utf-8", "replace"))
+            if _OWN_POLLS.search(line):
+                continue        # 监控每 5 秒抓 /metrics、加载时每秒探 /health —— 不留，否则日志全是它
+            m = _KV_SIZE.search(line)
+            if m:
+                self.kv_tokens = int(m.group(1).replace(",", ""))
             if line:
                 with self._lock:
                     self._logs.append(line)
