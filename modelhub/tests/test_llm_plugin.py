@@ -382,3 +382,18 @@ def test_cancelling_the_download_a_load_waits_for_drops_the_pending_load(make):
     assert _wait(lambda: plugin.fake_downloads.started)
     plugin.dispatch("llm", {"action": "download_cancel", "model": "qwen3-8b-fp8"})
     assert plugin.dispatch("llm", {"action": "info"})["state"] == "idle"
+
+
+def test_a_context_longer_than_the_kv_cache_is_refused_when_saved(make, tmp_path):
+    """vLLM 要求 KV 至少放得下一个最长请求。N4 上 4B、131k 上下文、24 GB 预算实测起不来。"""
+    plugin, _ = make()
+    _install(tmp_path, plugin, "qwen3-4b-instruct-2507")
+    cfg = model_dir(tmp_path / "root" / "models", "qwen3-4b-instruct-2507") / "config.json"
+    cfg.write_text(json.dumps({"num_hidden_layers": 36, "num_key_value_heads": 8, "num_attention_heads": 32,
+                               "head_dim": 128, "hidden_size": 2560, "torch_dtype": "bfloat16"}))
+    r = plugin.dispatch("llm", {"action": "config_set", "model": "qwen3-4b-instruct-2507",
+                                "values": {"max_model_len": 131072, "memory_gb": 24}})
+    assert "需要 KV cache 18.0 GiB" in r["error"]["message"] and "至少 28 GB" in r["error"]["message"]
+    ok = plugin.dispatch("llm", {"action": "config_set", "model": "qwen3-4b-instruct-2507",
+                                 "values": {"max_model_len": 106496, "memory_gb": 25}})
+    assert "error" not in ok and ok["kv"]["bytes_per_token"] == 147456

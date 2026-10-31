@@ -491,7 +491,7 @@ function cfgField([k, label, type, hint], c) {
 }
 // ── KV cache 容量：agent 的前缀能不能留在缓存里 ──────────────────────────
 // 和引擎的算法一致：KV = 预算 - 权重 - 运行余量；token 数 = KV 字节 / 每 token 字节
-S.sessionTokens = 30000;   // agent 一次请求的提示大约多长（系统提示 + 工具 + 历史）
+S.sessionTokens = 100000;  // agent 一次请求的提示大约多长（系统提示 + 工具 + 历史），可达 100k
 function kvTokensFor(budgetGb, kv) {
   if (!kv?.bytes_per_token || !(budgetGb > 0)) return null;
   const bytes = (budgetGb - kv.weights_gib - kv.margin_gib) * 2 ** 30;
@@ -511,12 +511,15 @@ function kvEstimateHTML(c) {
   const ctx = Number(c.config.max_model_len) || 0;
   const perTok = kv.bytes_per_token >= 1024 ? `${Math.round(kv.bytes_per_token / 1024)} KB` : `${kv.bytes_per_token} B`;
   const want = Math.max(2, n + 1), need = budgetFor(want, kv);
+  const ctxTooBig = tokens != null && ctx && tokens < ctx;
   return `<div class="kv-est" id="kvEst">
     <div class="kv-head"><b>KV cache 放得下 ${tokens == null ? '—' : tokens.toLocaleString('en-US')} token</b>
       <span class="muted">每 token ${perTok}；预算 ${gb(budget)} GB − 权重 ${gb(kv.weights_gib)} GB − 运行余量 ${gb(kv.margin_gib)} GB</span></div>
     <div class="kv-line">agent 一次请求的提示约 <input id="sessTok" type="number" min="1000" step="1000" value="${S.sessionTokens}" aria-label="一次请求的提示长度"> token，
       ${n >= 1 ? `能同时保住约 <b>${n}</b> 个会话的前缀缓存` : '<b class="bad-text">一个会话的前缀都放不下</b>'}。
       ${S.sessionTokens > ctx && ctx ? `<span class="bad-text">超过了上下文长度 ${ctx.toLocaleString('en-US')}。</span>` : ''}</div>
+    ${ctxTooBig ? `<div class="kv-line bad-text">上下文 ${ctx.toLocaleString('en-US')} 比 KV cache 还大，这样起不来：预算至少 ${Math.ceil(kv.weights_gib + kv.margin_gib + ctx * kv.bytes_per_token / 2 ** 30)} GB，或上下文降到 ${tokens.toLocaleString('en-US')} 以下。</div>` : ''}
+    <div class="kv-line muted">缓存命中有多要紧：N4 上 Qwen3 4B 处理 80k token 的提示，冷启动首 token 88 秒，命中前缀缓存 0.4 秒。</div>
     <div class="kv-line muted">主 agent 和子 agent 交替请求时，放不下的会互相挤掉缓存，每次都要重算前缀。要保住 ${want} 个会话，预算约需 ${Math.ceil(need)} GB${need + (S.info?.memory?.overhead_gb || 4.4) > 0.9 * (S.models?.total_gb || 57.8) ? '（超过整机 90%，装不下）' : ''}。</div>
   </div>`;
 }
@@ -554,7 +557,7 @@ $('page').addEventListener('change', async e => {
 let logTimer = null;
 $('page').addEventListener('input', e => {
   if (S.page === 'service' && S.cfg && (e.target.dataset.cfg === 'memory_gb' || e.target.id === 'sessTok')) {
-    if (e.target.id === 'sessTok') S.sessionTokens = Math.max(1000, Number(e.target.value) || 30000);
+    if (e.target.id === 'sessTok') S.sessionTokens = Math.max(1000, Number(e.target.value) || 100000);
     const old = $('kvEst'), focusSess = e.target.id === 'sessTok';
     if (old) { old.outerHTML = kvEstimateHTML(S.cfg); if (focusSess) { const i = $('sessTok'); i.focus(); i.setSelectionRange?.(99, 99); } }
   }

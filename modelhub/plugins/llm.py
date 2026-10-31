@@ -495,9 +495,32 @@ class LLMPlugin:
         build_command("/m", spec.id, 1, {k: v for k, v in eff.items() if k != "memory_gb"},
                       float(eff["memory_gb"]), self._total_gb, overhead_gb=self._overhead_gb,
                       weights_bytes=spec.weights_bytes)
+        self._check_context_fits(spec, eff)
         configs[spec.id] = saved
         self._save_state({**state, "configs": configs})
         return self._do_config_get({"model": spec.id})
+
+    def _check_context_fits(self, spec, eff: dict) -> None:
+        """vLLM 要求 KV cache 至少放得下一个「上下文长度」那么长的请求，否则拒绝启动。
+
+        N4 上 Qwen3 4B 设上下文 131,072、预算 24 GB 时就是这样起不来的（需要 18 GiB KV，
+        只有 14 GiB）—— 在保存时就算出来，别等到加载几十秒后才失败。
+        """
+        try:
+            model_cfg = json.loads((model_dir(self._models_root, spec.id) / "config.json").read_text())
+        except (OSError, ValueError):
+            return                                   # 还没下载：加载时 vLLM 会自己报
+        per_token = kv_bytes_per_token(model_cfg, eff.get("kv_cache_dtype"))
+        ctx = int(eff.get("max_model_len") or 0)
+        if not per_token or not ctx:
+            return
+        budget = float(eff["memory_gb"])
+        fits = (budget - spec.weights_bytes / 2**30 - NON_KV_MARGIN_GB) * 2**30 / per_token
+        if fits < ctx:
+            need = spec.weights_bytes / 2**30 + NON_KV_MARGIN_GB + ctx * per_token / 2**30
+            raise ValueError(f"上下文 {ctx:,} token 需要 KV cache {ctx * per_token / 2**30:.1f} GiB，"
+                             f"预算 {budget:g} GB 只放得下 {max(0, int(fits)):,} token。"
+                             f"把预算调到至少 {need:.0f} GB，或把上下文降到 {max(0, int(fits)):,} 以下")
 
     def _do_set_autoload(self, args):
         state = self._load_state()
