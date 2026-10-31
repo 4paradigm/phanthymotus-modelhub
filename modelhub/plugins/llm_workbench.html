@@ -102,6 +102,17 @@ button:disabled { cursor: default; opacity: .4; }
 .tag { font-size: 12px; color: var(--muted); }
 .tag.ok { color: var(--ok); } .tag.warn { color: var(--warn); } .tag.bad { color: var(--bad); }
 
+.mtable { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.mtable th { text-align: left; font-weight: 400; font-size: 12px; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); }
+.mtable td { padding: 11px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.mtable th:nth-child(2), .mtable th:nth-child(3) { width: 104px; }
+.mtable th:nth-child(4) { width: 88px; } .mtable th:nth-child(5) { width: 232px; }
+.mtable .r { text-align: right; white-space: nowrap; }
+.mtable .name b { display: block; font-weight: 500; }
+.mtable .name span { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mtable .acts { text-align: right; white-space: nowrap; }
+.mtable .acts .btn + .btn { margin-left: 6px; }
+@media (max-width: 640px) { .mtable th:nth-child(2), .mtable td:nth-child(2), .mtable th:nth-child(4), .mtable td:nth-child(4) { display: none; } .mtable th:nth-child(5) { width: 150px; } }
 /* 下载 */
 .dl { padding: 12px 4px; border-bottom: 1px solid var(--line); }
 .dl-top { display: flex; align-items: baseline; gap: 12px; }
@@ -120,7 +131,11 @@ button:disabled { cursor: default; opacity: .4; }
 .form { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px 16px; }
 .field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 .field input, .field select, select.input { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 13px; color: var(--ink); width: 100%; }
-.field.changed span::after { content: "（已改）"; color: var(--accent); }
+.field.changed > span::after { content: "（已改）"; color: var(--accent); }
+.field .hint { font-size: 11.5px; color: var(--faint); line-height: 1.45; }
+.advanced { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
+.advanced summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.advanced[open] summary { color: var(--ink); }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .logs-bar { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .logs-bar input { flex: 1; min-width: 160px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
@@ -148,6 +163,18 @@ button:disabled { cursor: default; opacity: .4; }
 .send { width: 32px; height: 32px; border-radius: 50%; border: 0; background: var(--button); color: var(--button-ink); display: grid; place-items: center; flex: none; }
 .send svg { width: 16px; height: 16px; }
 
+/* 性能测试 */
+.btable th:nth-child(1) { width: 34px; } .btable th:nth-child(2) { width: 96px; } .btable th:nth-child(3) { width: auto; }
+.btable th:nth-child(4), .btable th:nth-child(5) { width: 104px; } .btable th:nth-child(6), .btable th:nth-child(7) { width: 112px; }
+.btable th:nth-child(8) { width: 64px; }
+.cmp { margin-bottom: 18px; }
+.cmp h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.cmp h3 .muted { font-weight: 400; }
+.cmp-row { display: grid; grid-template-columns: 220px 1fr 84px; gap: 10px; align-items: center; margin: 4px 0; font-size: 12px; }
+.cmp-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-track { height: 14px; }
+.cmp-track i { display: block; height: 100%; background: var(--s1); border-radius: 0 4px 4px 0; }
+.cmp-val { text-align: right; } .cmp-val.best { font-weight: 600; }
 /* 监控 */
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .tile { padding: 12px 14px 12px 0; }
@@ -201,6 +228,7 @@ button:disabled { cursor: default; opacity: .4; }
       <button data-page="models" aria-current="page"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 13.8 5v6L8 14.2 2.2 11V5z"/><path d="M2.2 5 8 8.2 13.8 5M8 8.2v6"/></svg>模型<span class="badge" id="dlBadge"></span></button>
       <button data-page="service"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 2v5"/><path d="M4.6 4.2a5 5 0 1 0 6.8 0"/></svg>服务</button>
       <button data-page="chat"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v7.5H7l-3 2.5V11H2.5z"/></svg>对话</button>
+      <button data-page="bench"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 13.5V9M8 13.5V4M13 13.5V7"/></svg>性能测试</button>
       <button data-page="monitor"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12.5h12"/><path d="m2.5 10 3-3.5 2.5 2 5-5.5"/></svg>监控</button>
     </nav>
     <div class="rail-status" id="railStatus">读取中…</div>
@@ -248,13 +276,20 @@ const modelOf = id => (S.models?.models || []).find(m => m.id === id);
 const titleOf = id => modelOf(id)?.title || id || '';
 const STATE_TEXT = {ready: '运行中', loading: '准备中', error: '出错', idle: '已停止'};
 
-// 「再点一次确认」：iframe 里没有 confirm()
-const armed = new WeakMap();
+// 「再点一次确认」：iframe 里没有 confirm()。确认态记在 S 里、按 key 认按钮，
+// 页面每 2 秒重画也不会丢 —— 记在按钮元素上时，重画后第二下点到的是新按钮，永远确认不了。
 function confirmTwice(b, label = '再点一次确认') {
-  if (armed.has(b)) { clearTimeout(armed.get(b)); armed.delete(b); return true; }
-  const t = b.textContent; b.textContent = label; b.classList.add('armed');
-  armed.set(b, setTimeout(() => { armed.delete(b); b.textContent = t; b.classList.remove('armed'); }, 3000));
+  const key = b.dataset.confirm;
+  if (S.armed && S.armed.key === key && Date.now() < S.armed.until) { S.armed = null; return true; }
+  S.armed = {key, label, until: Date.now() + 3500};
+  applyArmed();
+  setTimeout(() => { if (S.armed && S.armed.key === key && Date.now() >= S.armed.until) { S.armed = null; render(false); } }, 3600);
   return false;
+}
+function applyArmed() {
+  if (!S.armed || Date.now() >= S.armed.until) return;
+  const b = document.querySelector(`[data-confirm="${CSS.escape(S.armed.key)}"]`);
+  if (b) { b.textContent = S.armed.label; b.classList.add('armed'); }
 }
 
 function renderRail() {
@@ -275,17 +310,19 @@ function go(page) {
   if (page === 'service') { loadConfig(S.cfgModel || current() || firstInstalled()); refreshLogs(); }
   if (page === 'chat') loadChat();
   if (page === 'monitor') loadMetrics();
+  if (page === 'bench') loadBench();
 }
 const firstInstalled = () => (S.models?.models || []).find(m => m.installed)?.id || null;
 function render(full) {
   renderRail();
-  ({models: renderModels, service: renderService, chat: renderChat, monitor: renderMonitor})[S.page](full);
+  ({models: renderModels, service: renderService, chat: renderChat, monitor: renderMonitor, bench: renderBench})[S.page](full);
+  applyArmed();
 }
 
 // ══ 模型 ════════════════════════════════════════════════════════════════
-function renderModels() {
+function renderModels(full) {
   const M = S.models; if (!M) return;
-  $('head').innerHTML = `<h1>模型</h1>
+  if (full || !$('page').querySelector('.wrap')) $('head').innerHTML = `<h1>模型</h1>
     <div class="seg" role="group" aria-label="视图">
       <button data-tab="local" aria-pressed="${S.modelsTab === 'local'}">本机</button>
       <button data-tab="market" aria-pressed="${S.modelsTab === 'market'}">推荐模型</button></div>`;
@@ -309,7 +346,7 @@ function dlRow(m) {
       ? `<button class="btn sm" data-dl="pause" data-id="${esc(m.id)}">暂停</button>`
       : st === 'paused' || st === 'error' ? `<button class="btn sm" data-dl="resume" data-id="${esc(m.id)}">${st === 'error' ? '重试' : '继续'}</button>` : '';
   return `<div class="dl"><div class="dl-top"><b>${esc(m.title)}</b><span class="tag ${st === 'error' ? 'bad' : ''}">${esc(label)}</span>
-      <div class="acts">${btns}${st !== 'verifying' ? `<button class="btn sm quiet danger" data-dl="cancel" data-id="${esc(m.id)}">取消</button>` : ''}</div></div>
+      <div class="acts">${btns}${st !== 'verifying' ? `<button class="btn sm quiet danger" data-dl="cancel" data-id="${esc(m.id)}" data-confirm="cancel-${esc(m.id)}">取消</button>` : ''}</div></div>
     ${st === 'error' ? `<div class="dl-meta"><span class="tag bad">${esc(j.error)}</span></div>` : `
     <div class="dl-bar${st === 'paused' ? ' paused' : ''}"><i style="width:${j.pct || 0}%"></i></div>
     <div class="dl-meta"><span>${fmtBytes(j.bytes_done)} / ${fmtBytes(j.bytes_total)}</span>
@@ -320,22 +357,25 @@ function localList(M) {
   const rows = M.models.filter(m => m.installed);
   if (!rows.length) return `<div class="section"><p class="sub">这台机器上还没有模型。在「推荐模型」里选一个下载。</p>
     <button class="btn primary" data-tab="market">看推荐模型</button></div>`;
-  return `<div class="section"><h2>已下载</h2><div class="list">
-    <div class="item head-row"><span>模型</span><span>磁盘</span><span>运行时内存</span><span class="tag-col">状态</span><span></span></div>
+  const running = current() && S.info.state !== 'idle' ? current() : null;
+  return `<div class="section"><h2>已下载</h2>
+    <p class="sub">同一时间只运行一个模型。${running ? `现在运行的是 ${esc(titleOf(running))}；切换到别的模型会先把它停掉。` : '现在没有模型在运行。'}</p>
+    <table class="mtable"><thead><tr><th>模型</th><th class="r">磁盘</th><th class="r">运行时内存</th><th>状态</th><th></th></tr></thead><tbody>
     ${rows.map(m => {
-      const isCur = m.id === current(), st = isCur ? S.info.state : 'idle';
-      return `<div class="item"><div class="name"><b>${esc(m.title)}</b><span>${esc(m.repo)}</span></div>
-        <span class="num">${gb(m.disk_gb, 2)} GB</span><span class="num">约 ${gb(m.footprint_gb)} GB</span>
-        <span class="tag tag-col ${isCur && st === 'ready' ? 'ok' : isCur && st === 'error' ? 'bad' : isCur ? 'warn' : ''}">${isCur ? esc(STATE_TEXT[st]) : ''}</span>
-        <div class="acts">${isCur && st !== 'idle' ? `<button class="btn sm" data-go="service">服务</button>`
-          : m.unsupported ? `<span class="tag bad" title="${esc(m.unsupported)}">本机不支持</span>`
-          : `<button class="btn sm" data-load="${esc(m.id)}">启动</button>`}
-          ${isCur && st !== 'idle' ? '' : `<button class="btn sm quiet danger" data-del="${esc(m.id)}">删除</button>`}</div></div>`;
-    }).join('')}</div></div>`;
+      const isCur = m.id === running, st = isCur ? S.info.state : 'idle';
+      const action = m.unsupported ? `<span class="tag bad" title="${esc(m.unsupported)}">本机不支持</span>`
+        : isCur ? `<button class="btn sm danger" data-stop="1" data-confirm="stop">停止</button>`
+        : running ? `<button class="btn sm" data-load="${esc(m.id)}" data-confirm="switch-${esc(m.id)}" data-confirm-label="再点一次：停止 ${esc(titleOf(running))} 并切换">切换到这个</button>`
+        : `<button class="btn sm primary" data-load="${esc(m.id)}">启动</button>`;
+      return `<tr><td class="name"><b>${esc(m.title)}</b><span>${esc(m.repo)}</span></td>
+        <td class="r">${gb(m.disk_gb, 2)} GB</td><td class="r">约 ${gb(m.footprint_gb)} GB</td>
+        <td><span class="tag ${isCur && st === 'ready' ? 'ok' : isCur && st === 'error' ? 'bad' : isCur ? 'warn' : ''}">${isCur ? esc(STATE_TEXT[st]) : '—'}</span></td>
+        <td class="acts">${action}${isCur ? '' : `<button class="btn sm quiet danger" data-del="${esc(m.id)}" data-confirm="del-${esc(m.id)}">删除</button>`}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
 }
 function marketList(M) {
   return `<div class="section"><p class="sub">挑过、配好参数的模型。运行时内存是预算加进程开销的估计；整机共 ${gb(M.total_gb)} GB，和感知等服务共用。</p>
-    <div class="list"><div class="item head-row"><span>模型</span><span>下载</span><span>运行时内存</span><span class="tag-col">本机</span><span></span></div>
+    <table class="mtable"><thead><tr><th>模型</th><th class="r">下载</th><th class="r">运行时内存</th><th>本机</th><th></th></tr></thead><tbody>
     ${M.models.map(m => {
       const dl = m.download && ['downloading', 'queued', 'paused', 'verifying'].includes(m.download.state);
       const fits = m.footprint_gb <= 0.9 * M.total_gb;
@@ -344,10 +384,10 @@ function marketList(M) {
       const btn = m.installed ? `<button class="btn sm" data-tab="local">查看</button>`
         : dl ? `<span class="tag warn">下载中</span>`
         : `<button class="btn sm${m.unsupported || !fits ? '' : ' primary'}" data-download="${esc(m.id)}" ${m.unsupported || !fits ? 'disabled' : ''}>下载</button>`;
-      return `<div class="item"><div class="name"><b>${esc(m.title)}</b><span>${esc(m.unsupported || m.note || m.repo)}</span></div>
-        <span class="num">${gb(m.size_gb)} GB</span><span class="num">约 ${gb(m.footprint_gb)} GB</span>
-        <span class="tag-col">${tag}</span><div class="acts">${btn}</div></div>`;
-    }).join('')}</div></div>`;
+      return `<tr><td class="name"><b>${esc(m.title)}</b><span>${esc(m.unsupported || m.note || m.repo)}</span></td>
+        <td class="r">${gb(m.size_gb)} GB</td><td class="r">约 ${gb(m.footprint_gb)} GB</td>
+        <td>${tag}</td><td class="acts">${btn}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
 }
 $('head').addEventListener('click', e => {
   const t = e.target.closest('button[data-tab]'); if (t) { S.modelsTab = t.dataset.tab; renderModels(); }
@@ -355,9 +395,14 @@ $('head').addEventListener('click', e => {
 $('page').addEventListener('click', async e => {
   const b = e.target.closest('button'); if (!b || S.page !== 'models') return;
   if (b.dataset.tab) { S.modelsTab = b.dataset.tab; return renderModels(); }
-  if (b.dataset.go) return go(b.dataset.go);
   if (b.dataset.download) { b.disabled = true; await act(() => call('download', {model: b.dataset.download})); await refresh(true); return renderModels(); }
-  if (b.dataset.load) { b.disabled = true; await act(() => call('load', {model: b.dataset.load})); await refresh(true); S.cfgModel = b.dataset.load; return go('service'); }
+  // 启动 / 切换 / 停止都留在本页：状态在这一行里更新，不跳页面
+  if (b.dataset.load) {
+    if (b.dataset.confirm && !confirmTwice(b, b.dataset.confirmLabel)) return;
+    b.disabled = true; await act(() => call('load', {model: b.dataset.load})); S.cfgModel = b.dataset.load;
+    await refresh(true); return renderModels();
+  }
+  if (b.dataset.stop) { if (!confirmTwice(b, '再点一次停止')) return; b.disabled = true; await act(() => call('unload')); await refresh(true); return renderModels(); }
   if (b.dataset.del) { if (!confirmTwice(b)) return; await act(() => call('delete_files', {model: b.dataset.del})); await refresh(true); return renderModels(); }
   if (b.dataset.dl) {
     if (b.dataset.dl === 'cancel' && !confirmTwice(b)) return;
@@ -367,14 +412,17 @@ $('page').addEventListener('click', async e => {
 });
 
 // ══ 服务 ════════════════════════════════════════════════════════════════
-const CFG = [
-  ['memory_gb', '内存预算（GB）', 'number', '给模型的权重和 KV cache；进程本身另需约 4 GB'],
-  ['max_model_len', '上下文长度', 'number', '一次请求最多多少 token；越大 KV cache 越占内存'],
-  ['max_num_seqs', '最大并发', 'number', '同时处理的请求数'],
-  ['cudagraph_capture_sizes', 'CUDA graph 批大小', 'text', '只为这些批大小预编译，越少启动越快'],
-  ['tool_call_parser', '工具调用解析器', 'text', ''],
-  ['reasoning_parser', '思考解析器', 'text', '模型不带思考就留空'],
-  ['extra_args', '额外 vLLM 参数', 'text', '空格分隔'],
+const CFG_BASIC = [
+  ['memory_gb', '内存预算（GB）', 'number', '权重和 KV cache 用的；vLLM 进程本身另外约 4 GB'],
+  ['max_model_len', '上下文长度（token）', 'number', '一次对话最长多少。越长越占内存'],
+  ['max_num_seqs', '最大并发', 'number', '同时处理几个请求。机器人上一般 1–8'],
+];
+// 下面这些由模型本身决定，注册表里已经配好；只有接入新模型时才需要改
+const CFG_ADVANCED = [
+  ['tool_call_parser', '工具调用格式', 'select', '模型把「调用哪个工具」写成什么格式，要和模型对上，否则工具调用会被当成普通文字'],
+  ['reasoning_parser', '思考内容格式', 'select', '带思考过程的模型才需要；不带的选「不解析」'],
+  ['cudagraph_capture_sizes', 'CUDA graph 批大小', 'text', '空格分隔，如 1 2 4 8。只为这些批大小预编译，越少启动越快'],
+  ['extra_args', '额外 vLLM 参数', 'text', '空格分隔，原样传给 vllm serve'],
 ];
 async function loadConfig(id) {
   if (!id) { S.cfg = null; return renderService(true); }
@@ -385,7 +433,7 @@ async function loadConfig(id) {
 function renderService(full) {
   const i = S.info; if (!i) return;
   const st = i.state, eng = i.engine || {};
-  $('head').innerHTML = `<h1>服务</h1><span class="grow"></span>`;
+  if (full || !$('svcStatus')) $('head').innerHTML = `<h1>服务</h1><span class="grow"></span>`;
   const statusHTML = `<div class="status-big"><i class="dot ${st}"></i>${esc(current() ? `${titleOf(current())} ${STATE_TEXT[st]}` : '没有加载模型')}</div>
     ${i.message && st !== 'ready' && current() ? `<p class="sub">${esc(i.message)}</p>` : ''}
     <dl class="status-grid">
@@ -397,7 +445,7 @@ function renderService(full) {
     </dl>
     <div class="actions">
       ${st === 'idle' || !current() ? `<button class="btn primary" data-svc="start" ${S.cfgModel ? '' : 'disabled'}>启动 ${esc(titleOf(S.cfgModel))}</button>`
-        : `<button class="btn" data-svc="restart">重启</button><button class="btn danger" data-svc="stop">停止</button>`}
+        : `<button class="btn" data-svc="restart">重启</button><button class="btn danger" data-svc="stop" data-confirm="svc-stop">停止</button>`}
     </div>`;
   if (full || !$('svcStatus')) {
     const installed = (S.models?.models || []).filter(m => m.installed && !m.unsupported);
@@ -416,24 +464,42 @@ function renderService(full) {
         <div class="logs" id="logs" tabindex="0" aria-label="引擎日志">读取中…</div></div></div>`;
   } else $('svcStatus').innerHTML = statusHTML;
 }
+function cfgField([k, label, type, hint], c) {
+  const v = c.config, changed = new Set(c.overridden);
+  const val = Array.isArray(v[k]) ? v[k].join(' ') : (v[k] ?? '');
+  let input;
+  const opts = c.choices?.[k] || [];
+  if (type === 'select' && opts.length) {
+    const has = opts.some(o => o.value === val);
+    input = `<select data-cfg="${k}"><option value="" ${val ? '' : 'selected'}>不解析</option>
+      ${opts.map(o => `<option value="${esc(o.value)}" ${o.value === val ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+      ${val && !has ? `<option value="${esc(val)}" selected>${esc(val)}（本机 vLLM 不认识）</option>` : ''}</select>`;
+  } else {
+    input = `<input data-cfg="${k}" type="${type === 'select' ? 'text' : type}" value="${esc(val)}" ${type === 'number' ? 'min="1"' : ''}>`;
+  }
+  return `<label class="field${changed.has(k) ? ' changed' : ''}"><span>${label}</span>${input}<small class="hint">${esc(hint)}</small></label>`;
+}
 function cfgForm(c) {
   const v = c.config, changed = new Set(c.overridden);
-  const val = k => Array.isArray(v[k]) ? v[k].join(' ') : (v[k] ?? '');
-  return `<div class="form">${CFG.map(([k, label, type, hint]) =>
-      `<label class="field${changed.has(k) ? ' changed' : ''}" title="${esc(hint)}"><span>${label}</span>
-        <input data-cfg="${k}" type="${type}" value="${esc(val(k))}" ${type === 'number' ? 'min="1"' : ''}></label>`).join('')}</div>
-    <label class="check" style="margin-top:12px"><input type="checkbox" data-cfg="enforce_eager" ${v.enforce_eager ? 'checked' : ''}> 不用 CUDA graph（启动最快，生成稍慢）</label>
-    <label class="check" style="margin-top:6px"><input type="checkbox" id="autoload" ${c.autoload ? 'checked' : ''}> 开机自动启动上次的模型</label>
+  const advChanged = CFG_ADVANCED.some(([k]) => changed.has(k)) || changed.has('enforce_eager');
+  return `<div class="form">${CFG_BASIC.map(f => cfgField(f, c)).join('')}</div>
+    <details class="advanced"${advChanged ? ' open' : ''}><summary>高级设置</summary>
+      <p class="sub" style="margin:8px 0 12px">这些由模型本身决定，推荐模型都已配好，一般不用改；接入新模型时才需要。</p>
+      <div class="form">${CFG_ADVANCED.map(f => cfgField(f, c)).join('')}</div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" data-cfg="enforce_eager" ${v.enforce_eager ? 'checked' : ''}> 不用 CUDA graph（启动最快，生成稍慢）</label>
+    </details>
+    <label class="check" style="margin-top:14px"><input type="checkbox" id="autoload" ${c.autoload ? 'checked' : ''}> 开机自动启动上次的模型</label>
     <p class="sub" style="margin-top:12px">按这个配置约占 <b>${gb(c.footprint_gb)}</b> GB 内存。改了之后要重启服务才生效。</p>
     <div class="actions"><button class="btn primary" data-svc="save">保存</button>
-      ${changed.size ? '<button class="btn quiet" data-svc="reset">恢复默认</button>' : ''}
+      ${changed.size ? '<button class="btn quiet" data-svc="reset" data-confirm="svc-reset">恢复默认</button>' : ''}
       ${current() === c.model && S.info.state !== 'idle' ? '<button class="btn" data-svc="save-restart">保存并重启</button>' : ''}</div>`;
 }
 function collectCfg() {
   const values = {};
   document.querySelectorAll('[data-cfg]').forEach(el => {
     const k = el.dataset.cfg;
-    values[k] = el.type === 'checkbox' ? el.checked : el.value.trim() === '' ? null : el.type === 'number' ? Number(el.value) : el.value.trim();
+    const raw = String(el.value ?? '').trim();
+    values[k] = el.type === 'checkbox' ? el.checked : raw === '' ? null : el.type === 'number' ? Number(raw) : raw;
   });
   return values;
 }
@@ -451,6 +517,7 @@ $('page').addEventListener('click', async e => {
   const b = e.target.closest('button[data-svc]'); if (!b || S.page !== 'service') return;
   const a = b.dataset.svc;
   if (a === 'stop' && !confirmTwice(b, '再点一次停止')) return;
+  if (a === 'reset' && !confirmTwice(b, '再点一次恢复默认')) return;
   b.disabled = true;
   if (a === 'start') await act(() => call('load', {model: S.cfgModel}));
   if (a === 'restart') await act(() => call('load', {model: current()}));
@@ -491,8 +558,12 @@ async function loadChat() {
 }
 function renderChat(full) {
   const ready = current() && S.info?.state === 'ready';
-  $('head').innerHTML = `<h1>对话</h1><span class="muted">${ready ? esc(titleOf(current())) : ''}</span><span class="grow"></span>
-    <button class="btn quiet" id="clearChat" ${S.chat.length ? '' : 'disabled'}>清空对话</button>`;
+  if (full || !$('clearChat')) {
+    $('head').innerHTML = `<h1>对话</h1><span class="muted" id="chatModel"></span><span class="grow"></span>
+      <button class="btn quiet" id="clearChat" data-confirm="clear-chat">清空对话</button>`;
+  }
+  $('chatModel').textContent = ready ? titleOf(current()) : '';
+  if (!(S.armed && S.armed.key === 'clear-chat')) $('clearChat').disabled = !S.chat.length || S.streaming;
   if (!full && $('chatScroll')) { updateComposer(); return; }
   $('page').innerHTML = `<div class="chat-page"><div class="chat-scroll" id="chatScroll"></div>
     <div class="composer-wrap"><div class="composer">
@@ -530,8 +601,8 @@ function updateComposer() {
   $('send').disabled = !S.streaming && (!ready || !t.value.trim());
 }
 $('head').addEventListener('click', async e => {
-  if (e.target.id !== 'clearChat') return;
-  if (!confirmTwice(e.target, '再点一次清空')) return;
+  const b = e.target.closest('#clearChat'); if (!b) return;
+  if (!confirmTwice(b, '再点一次清空')) return;
   const r = await act(() => call('chat_clear'));
   if (r) { S.chat = []; S.streaming = false; renderChat(true); }
 });
@@ -563,6 +634,81 @@ async function follow(job, first) {
   if (S.page === 'chat') { drawMessages(); updateComposer(); renderChat(false); $('input')?.focus(); }
 }
 
+// ══ 性能测试 ════════════════════════════════════════════════════════════
+async function loadBench() {
+  const [st, list] = [await act(() => call('bench_status')), await act(() => call('bench_list'))];
+  if (st) S.benchRun = st.run;
+  if (list) S.benchRuns = list.runs;
+  if (S.page === 'bench') renderBench(true);
+}
+const benchKey = r => ({
+  ttftShort: r.results.ttft?.[0]?.ttft_ms, ttftLong: r.results.ttft?.at(-1)?.ttft_ms,
+  longTokens: r.results.ttft?.at(-1)?.prompt_tokens, prefill: r.results.ttft?.at(-1)?.prefill_tps,
+  decode: r.results.decode?.tps, itl99: r.results.decode?.itl_p99_ms,
+  conc: r.results.concurrency?.at(-1)?.total_tps, concN: r.results.concurrency?.at(-1)?.n,
+});
+function renderBench(full) {
+  if (full || !$('benchTop')) $('head').innerHTML = `<h1>性能测试</h1><span class="grow"></span>`;
+  const run = S.benchRun, runs = S.benchRuns || [], ready = current() && S.info?.state === 'ready';
+  const running = run?.state === 'running';
+  const top = running
+    ? `<div class="dl" style="border:0;padding:0"><div class="dl-top"><b>正在测 ${esc(run.title)}</b><span class="tag">${run.step} / ${run.steps}　${esc(run.label)}</span>
+        <div class="acts"><button class="btn sm" data-bench="stop">停止测试</button></div></div>
+        <div class="dl-bar"><i style="width:${Math.round(run.step / run.steps * 100)}%"></i></div>
+        <div class="dl-meta"><span>测试期间是真实请求，服务会变慢。</span></div></div>`
+    : `<p class="sub">用同一套请求测当前运行的模型：短 / 长提示的首 token 延迟、单路生成速度、1 / 4 / 8 路并发的总吞吐。
+        结果连同当时的配置一起保存，换模型或改配置后再测一次，就能放在一起比。</p>
+       ${run?.state === 'error' ? `<p class="tag bad" style="margin:0 0 10px">上次测试失败：${esc(run.error)}</p>` : ''}
+       <button class="btn primary" data-bench="start" ${ready ? '' : 'disabled'}>${ready ? `测试 ${esc(titleOf(current()))}` : '先启动一个模型'}</button>
+       <span class="muted" style="margin-left:10px">大约 1–3 分钟</span>`;
+  if (!full && $('benchTop')) { $('benchTop').innerHTML = top; return; }
+  const sel = S.benchSel || (S.benchSel = new Set(runs.slice(0, 2).map(r => r.id)));
+  const picked = runs.filter(r => sel.has(r.id));
+  $('page').innerHTML = `<div class="wrap">
+    <div class="section" id="benchTop">${top}</div>
+    <div class="section"><h2>测试记录</h2>${runs.length ? `
+      <p class="sub">勾选几次结果，在下面并排比较。</p>
+      <table class="mtable btable"><thead><tr><th></th><th>时间</th><th>模型和配置</th><th class="r">首 token（短）</th><th class="r">首 token（长）</th><th class="r">单路生成</th><th class="r">并发总吞吐</th><th></th></tr></thead><tbody>
+      ${runs.map(r => { const k = benchKey(r), c = r.config || {};
+        return `<tr><td><input type="checkbox" data-pick="${esc(r.id)}" ${sel.has(r.id) ? 'checked' : ''} aria-label="选中这次结果"></td>
+          <td>${fmtTime(r.ts, true)}</td>
+          <td class="name"><b>${esc(r.title)}</b><span>预算 ${gb(c.memory_gb, 0)} GB，上下文 ${c.max_model_len}，并发 ${c.max_num_seqs}，vLLM ${esc((r.engine_version || '').split('+')[0])}</span></td>
+          <td class="r">${fmtNum(k.ttftShort)} ms</td><td class="r">${fmtNum(k.ttftLong)} ms</td>
+          <td class="r">${fmtNum(k.decode)} token/秒</td><td class="r">${fmtNum(k.conc)} token/秒</td>
+          <td class="acts"><button class="btn sm quiet danger" data-bench-del="${esc(r.id)}" data-confirm="bdel-${esc(r.id)}">删除</button></td></tr>`; }).join('')}
+      </tbody></table>` : '<p class="sub">还没有测试记录。</p>'}</div>
+    ${picked.length >= 2 ? `<div class="section"><h2>对比</h2>${compareBars(picked)}</div>` : ''}</div>`;
+}
+// 每个指标一组横条：同一个指标里谁好一眼可见（越低越好的会注明）。单一指标、单一颜色，身份靠行首文字。
+function compareBars(runs) {
+  const metrics = [['ttftShort', '首 token 延迟（短提示）', 'ms', true], ['ttftLong', '首 token 延迟（长提示）', 'ms', true],
+                   ['decode', '单路生成速度', 'token/秒', false], ['conc', '并发总吞吐', 'token/秒', false],
+                   ['prefill', '预填充速度', 'token/秒', false]];
+  const label = r => `${titleOf(r.model) || r.title}　${fmtTime(r.ts, true)}`;
+  return metrics.map(([k, name, unit, lowerBetter]) => {
+    const vals = runs.map(r => benchKey(r)[k]).filter(v => v != null);
+    if (!vals.length) return '';
+    const max = Math.max(...vals), best = lowerBetter ? Math.min(...vals) : max;
+    return `<div class="cmp"><h3>${name}<span class="muted">（${unit}，${lowerBetter ? '越低越好' : '越高越好'}）</span></h3>
+      ${runs.map(r => { const v = benchKey(r)[k];
+        return `<div class="cmp-row"><span class="cmp-label">${esc(label(r))}</span>
+          <span class="cmp-track"><i style="width:${v == null ? 0 : Math.max(2, v / max * 100)}%"></i></span>
+          <span class="cmp-val${v === best ? ' best' : ''}">${v == null ? '—' : fmtNum(v)}</span></div>`; }).join('')}</div>`;
+  }).join('');
+}
+$('page').addEventListener('click', async e => {
+  if (S.page !== 'bench') return;
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.bench === 'start') { b.disabled = true; const r = await act(() => call('bench_start')); if (r) S.benchRun = r.run; renderBench(false); }
+  if (b.dataset.bench === 'stop') { await act(() => call('bench_stop')); }
+  if (b.dataset.benchDel) { if (!confirmTwice(b)) return; const r = await act(() => call('bench_delete', {id: b.dataset.benchDel})); if (r) { S.benchRuns = r.runs; renderBench(true); } }
+});
+$('page').addEventListener('change', e => {
+  if (S.page !== 'bench' || !e.target.dataset.pick) return;
+  e.target.checked ? S.benchSel.add(e.target.dataset.pick) : S.benchSel.delete(e.target.dataset.pick);
+  renderBench(true);
+});
+
 // ══ 监控 ════════════════════════════════════════════════════════════════
 const RANGES = [['15m', '15 分钟'], ['1h', '1 小时'], ['6h', '6 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['30d', '30 天']];
 // 每张图一个量纲，不用双轴；同量纲的最多三条线（dataviz 调色板前三个槽位）
@@ -591,7 +737,7 @@ function lastVal(key) {
   return null;
 }
 function renderMonitor() {
-  $('head').innerHTML = `<h1>监控</h1><span class="grow"></span>
+  if (S.page === 'monitor') $('head').innerHTML = `<h1>监控</h1><span class="grow"></span>
     <div class="seg" role="group" aria-label="时间范围">${RANGES.map(([k, l]) =>
       `<button data-range="${k}" aria-pressed="${S.range === k}">${l}</button>`).join('')}</div>`;
   const M = S.metrics;
@@ -706,10 +852,9 @@ async function poll() {
     if (!S.streaming) {
       await refresh(busy || (S.page === 'models' && tick % 3 === 0) || tick % 10 === 0);
       // 有按钮在等「再点一次确认」时不重画，不然确认态被冲掉
-      if (S.page === 'models') { if (!document.querySelector('.armed')) renderModels(); }
-      else if (S.page === 'service') { renderService(false); if (tick % 2 === 0) refreshLogs(); }
-      else if (S.page === 'chat') renderChat(false);
-      renderRail();
+      if (S.page !== 'monitor') render(false);       // 监控页只在取到新数据时重画
+      if (S.page === 'service' && tick % 2 === 0) refreshLogs();
+      if (S.page === 'bench' && S.benchRun?.state === 'running') await loadBench();
     }
     const every = {'15m': 5, '1h': 5, '6h': 15}[S.range] || 30;    // 按范围决定多久重取（每 tick 2 秒）
     if (S.page === 'monitor' && tick % every === 0) loadMetrics();

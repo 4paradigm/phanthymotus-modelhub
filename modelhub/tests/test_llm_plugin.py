@@ -84,6 +84,7 @@ class _FakeDownloads:
 
 
 CFG = {"default_memory_gb": 8, "backend_port": 15750, "host_overhead_gb": 4.4, "metrics": False,
+       "probe_parsers": False,
        "serve_defaults": {"max_num_seqs": 8, "cudagraph_capture_sizes": [1, 2, 4, 8]}}
 
 

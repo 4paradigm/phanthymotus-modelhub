@@ -38,7 +38,9 @@ from pathlib import Path
 
 from serving.chat import MAX_HISTORY_CHARS, ChatJob
 from serving.downloads import DownloadManager, dir_bytes, disk_usage
+from serving.bench import BenchRunner
 from serving.metrics import RANGES, MetricsStore, Sampler
+from serving.vllm_info import ParserChoices
 from serving.registry import (MODEL_ID_RE, Registry, installed_vllm_version, is_installed,
                               model_dir, pin_from_modelscope, unsupported_reason)
 from serving.vllm_engine import (DEFAULT_HOST_OVERHEAD_GB, ERROR, IDLE, LOADING, READY,
@@ -54,7 +56,8 @@ ACTIONS = ("ui", "info", "start", "stop", "models", "add_model", "remove_model",
            "download_pause", "download_resume", "download_cancel",
            "config_get", "config_set", "set_autoload",
            "chat_history", "chat_clear", "chat_start", "chat_poll", "chat_stop",
-           "metrics", "events",
+           "metrics", "events", "bench_start", "bench_status", "bench_stop", "bench_list",
+           "bench_delete",
            "download", "delete_files", "load", "unload", "logs", "test")
 PUBLIC_ACTIONS = ("info",)
 
@@ -84,6 +87,7 @@ TOOLS = [{
             "level": {"type": "string"},
             "q": {"type": "string"},
             "range": {"type": "string", "enum": list(RANGES)},
+            "id": {"type": "string"},
             "think": {"type": "boolean"},
             "max_tokens": {"type": "integer"},
             "job": {"type": "string"},
@@ -157,6 +161,8 @@ class LLMPlugin:
         # 放弃 —— 不然下载期间换了模型，旧的那条线程下完还会把旧模型加载上去。
         self._generation = 0
         self._chat_path = state_dir / "playground.json"
+        self._bench = BenchRunner(state_dir / "benchmarks", self._gateway_url)
+        self._parsers = ParserChoices(probe=bool(cfg.get("probe_parsers", True)))
         router.add_provider(self._routes)
         if own_downloads:
             self._downloads.restore(self._registry.all())   # 重启前没下完的接着下
@@ -442,6 +448,7 @@ class LLMPlugin:
         saved = (state.get("configs") or {}).get(spec.id) or {}
         eff = self._effective_config(spec, saved)
         return {"model": spec.id, "config": {k: eff.get(k) for k in self.CONFIG_FIELDS},
+                "choices": self._parsers.get(),
                 "overridden": sorted(saved), "autoload": bool(state.get("autoload")),
                 "selected": state.get("model"), "footprint_gb": footprint_gb(float(eff["memory_gb"]),
                                                                            self._overhead_gb)}
@@ -493,6 +500,32 @@ class LLMPlugin:
             return {"lines": []}
         return {"lines": engine.logs(int(args.get("lines") or 200), str(args.get("level") or ""),
                                      str(args.get("q") or ""))}
+
+    # ── 性能测试 ────────────────────────────────────────────────────────────
+    def _do_bench_start(self, args):
+        engine = self._current()
+        if not engine or engine.state != READY:
+            raise RuntimeError("先启动一个模型再测")
+        spec = self._registry.get(engine.model_id)
+        saved = (self._load_state().get("configs") or {}).get(spec.id) or {}
+        config = self._effective_config(spec, saved)
+        config["memory_gb"] = engine.budget_gb
+        return {"run": self._bench.start(spec.id, spec.title, config, self._engine_version,
+                                         self._total_gb)}
+
+    def _do_bench_status(self, args):
+        return {"run": self._bench.status()}
+
+    def _do_bench_stop(self, args):
+        self._bench.stop()
+        return {"run": self._bench.status()}
+
+    def _do_bench_list(self, args):
+        return {"runs": self._bench.list()}
+
+    def _do_bench_delete(self, args):
+        self._bench.delete(str(args.get("id") or ""))
+        return {"runs": self._bench.list()}
 
     def _do_metrics(self, args):
         if not self._metrics:

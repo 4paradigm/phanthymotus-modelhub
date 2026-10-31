@@ -191,7 +191,8 @@ def make_handler():
                     args = params.get("arguments") or {}
                     # info 是心跳探测、ui 回的是整页 HTML —— 都不进 INFO 日志
                     # chat_poll：运维页对话时每 250 ms 一次
-                    quiet = args.get('action') in ('info', 'models', 'logs', 'chat_poll')
+                    quiet = args.get('action') in ('info', 'models', 'logs', 'chat_poll',
+                                                   'bench_status', 'metrics', 'events')
                     if not quiet:
                         log.info(f"[mcp] tools/call: {name}({_brief(args)})")
                     result = _bundle.dispatch(name, args)
