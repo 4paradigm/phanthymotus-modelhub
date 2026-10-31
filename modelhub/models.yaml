@@ -13,6 +13,10 @@ models:
   phanthymotus-0.1:
     title: PhanthyMotus 0.1
     kind: llm
+    # Qwen3.5 架构：在两个基础镜像里查 ModelRegistry（2026-10-31）—— jp72 的 vLLM 0.19
+    # 有 Qwen3_5ForConditionalGeneration，jp71 的 0.11 没有。0.11 和 0.19 之间哪一版
+    # 开始支持没查，0.19 是实测过的下限。
+    min_vllm: "0.19"
     note: 基于 Qwen3.5-4B SFT（训练长度 25k）；Qwen3.5 架构，带视觉塔；未在 Thor 实测
     source:
       modelscope: JoStWey/pm_1031

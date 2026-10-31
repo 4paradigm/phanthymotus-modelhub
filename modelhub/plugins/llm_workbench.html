@@ -52,6 +52,7 @@
     <b>接口地址</b><span><code id="endpoint">—</code></span>
     <b>agent-core 配置</b><span><code id="clientCfg">—</code></span>
     <b>内存</b><span id="memory">—</span>
+    <b>推理引擎</b><span id="engine">—</span>
   </div>
   <div class="row" style="margin-top:10px">
     <button id="unload" class="danger" disabled>卸载模型</button>
@@ -132,6 +133,7 @@ function renderInfo(i) {
   $('stateNote').textContent = (i.message || '') +
     (st === 'ready' && eng.load_s ? ` · 加载耗时 ${Math.round(eng.load_s)}s` : '');
   $('model').textContent = i.model || '—';
+  $('engine').textContent = i.engine_version ? `vLLM ${i.engine_version.split('+')[0]}` : '—';
   const base = i.serving?.base_url || '—';
   $('endpoint').textContent = base;
   $('clientCfg').textContent = i.model ? JSON.stringify({url: base, key: 'local', model: i.model}) : '—';
@@ -159,14 +161,16 @@ function renderModels(r) {
       `<br><span class="muted">约占 ${esc(m.footprint_gb)} GB</span>`;
     const busyDl = dl && dl.state === 'downloading';
     const btns = [];
-    if (m.loaded) btns.push('<span class="state ready">使用中</span>');
+    if (m.unsupported) btns.push(`<span class="state error" title="${esc(m.unsupported)}">本机不支持</span>`);
+    else if (m.loaded) btns.push('<span class="state ready">使用中</span>');
     else if (m.installed) btns.push(`<button class="primary" data-load="${esc(m.id)}">加载</button>`,
                                     `<button class="danger" data-del="${esc(m.id)}">删文件</button>`);
     else btns.push(`<button class="primary" data-load="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>下载并加载</button>`,
                    `<button data-dl="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>只下载</button>`);
     if (!m.builtin && !m.loaded) btns.push(`<button class="danger" data-rm="${esc(m.id)}">移除</button>`);
     return `<tr><td><b>${esc(m.title)}</b><br><span class="muted">${esc(m.id)} · ${esc(m.repo)}</span>` +
-      (m.note ? `<br><span class="muted">${esc(m.note)}</span>` : '') + `</td>` +
+      (m.note ? `<br><span class="muted">${esc(m.note)}</span>` : '') +
+      (m.unsupported ? `<br><span class="state error">${esc(m.unsupported)}</span>` : '') + `</td>` +
       `<td>${esc(m.size_gb)} GB</td><td>${files}</td><td>${params}</td><td><div class="row">${btns.join('')}</div></td></tr>`;
   });
   $('models').innerHTML = rows.join('') || '<tr><td colspan="5" class="muted">注册表为空</td></tr>';

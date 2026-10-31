@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from serving.registry import (Registry, is_installed, mark_installed, model_dir,
-                              pin_from_modelscope)
+                              pin_from_modelscope, unsupported_reason, version_tuple)
 
 BUILTIN = Path(__file__).resolve().parents[1] / "models.yaml"
 SHA = "a" * 64
@@ -113,3 +113,14 @@ def test_pin_uses_repo_head_not_a_files_own_revision():
     assert entry["files"]["model.safetensors"]["sha256"] == "1" * 64
     assert fake.urls[-1].endswith("Revision=head1234")    # 文件列表是按 HEAD 取的
     assert set(entry["files"]) == {"config.json", "model.safetensors"}  # 文档、旧格式权重不要
+
+
+def test_min_vllm_marks_a_model_the_local_engine_cannot_load(tmp_path):
+    reg = Registry(BUILTIN, tmp_path / "u.yaml")
+    spec = reg.add_user_model("mine", _entry(min_vllm="0.19"))
+    assert version_tuple("0.11.0+582e4e37.nv25.11") == (0, 11, 0)
+    assert "需要 vLLM ≥ 0.19，本机是 0.11.0" in unsupported_reason(spec, "0.11.0+582e4e37")
+    assert unsupported_reason(spec, "0.19.0+6bc3197f") == ""
+    assert unsupported_reason(spec, "") == ""          # 版本未知（本地测试）不拦
+    with pytest.raises(ValueError, match="版本号"):
+        reg.add_user_model("bad", _entry(min_vllm="latest"))

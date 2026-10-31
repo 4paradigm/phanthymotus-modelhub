@@ -92,11 +92,12 @@ def make(tmp_path):
     _FakeEngine.instances.clear()
     downloads = _FakeDownloads(str(tmp_path / "root" / "models"))
 
-    def build():
+    def build(engine_version=""):
         router = Router()
         plugin = LLMPlugin(CFG, router=router, root=str(tmp_path / "root"),
                            builtin_registry=str(BUILTIN), gateway_url="http://127.0.0.1:15741",
-                           engine_factory=_FakeEngine, downloads=downloads, total_gb=59.0)
+                           engine_factory=_FakeEngine, downloads=downloads, total_gb=59.0,
+                           engine_version=engine_version)
         plugin.fake_downloads = downloads
         return plugin, router
     return build
@@ -266,3 +267,14 @@ def test_unknown_action_is_an_error_not_an_exception(make):
     plugin, _ = make()
     assert plugin.dispatch("llm", {"action": "rm -rf"})["error"]["code"] == "invalid_argument"
     assert plugin.dispatch("other", {"action": "info"}) is None
+
+
+def test_a_model_too_new_for_the_local_vllm_is_refused_before_downloading(make):
+    """jp71 的基础镜像是 vLLM 0.11：别为一个起不来的模型先下 9 GB。"""
+    plugin, _ = make(engine_version="0.11.0+582e4e37.nv25.11")
+    rows = {m["id"]: m for m in plugin.dispatch("llm", {"action": "models"})["models"]}
+    assert "需要 vLLM" in rows["phanthymotus-0.1"]["unsupported"]
+    assert rows["qwen3-0.6b"]["unsupported"] == ""
+    r = plugin.dispatch("llm", {"action": "load", "model": "phanthymotus-0.1"})
+    assert "需要 vLLM" in r["error"]["message"]
+    assert plugin.fake_downloads.started == []

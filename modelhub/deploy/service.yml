@@ -5,16 +5,16 @@
 modelhub:
   image: __IMAGE__
   container_name: embodied-modelhub
-  # GPU 走 CDI，不走 `runtime: nvidia`。Thor（JetPack 7.2）上 daemon.json 虽然声明了
-  # nvidia runtime，dockerd 实际只加载了 runc（docker info 只列出 runc），写
-  # runtime: nvidia 容器直接起不来；CDI 设备 nvidia.com/gpu=all 是 JetPack 7 的
-  # nvidia-container-toolkit 生成好的，docker info 里能看到。
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: cdi
-            device_ids: ["nvidia.com/gpu=all"]
+  # GPU 由宿主机的 nvidia runtime 挂进来（驱动库 libcuda 等只能用宿主机的，镜像带不了）。
+  # 和 perception / actucore 的片段同一种写法，整个机群一种。
+  # 曾经用过 CDI：一台 Thor（R39.2）上 dockerd 没重启、没加载 nvidia runtime，只能走
+  # CDI；另一台（星源智 N4，R38.4）正相反，nvidia runtime 是默认 runtime 而没有 CDI
+  # 描述文件。前者是宿主机配置没生效（daemon.json 写了），重启一次 dockerd 即可。
+  runtime: nvidia
+  # 容器的 1 号进程要能回收孤儿。vLLM 的 EngineCore 是 `vllm serve` 的子进程，父进程先退
+  # 时它被过继给 1 号进程；1 号是 main.py 的话没人 wait 它，每换一次模型留一个 <defunct>
+  # （N4 上实测：两次加载/卸载后留下两个）。init: true 让 docker 的 tini 当 1 号。
+  init: true
   network_mode: host
   # vLLM 的 worker 进程之间走共享内存，容器默认 64 MB 的 /dev/shm 不够
   ipc: host
