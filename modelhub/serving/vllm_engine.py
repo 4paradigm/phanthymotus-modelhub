@@ -80,13 +80,42 @@ def memory_fraction(budget_gb: float, total_gb: float,
     return round(max(budget_gb / total_gb, 0.02), 4)
 
 
+# 预算里除权重和 KV cache 之外要留的：CUDA 上下文等非 torch 部分 ~2.1 GB、激活峰值 0.4–0.7 GB、
+# CUDA graph ~0.6 GB（Thor 上 Qwen3-0.6B 实测）。
+NON_KV_MARGIN_GB = 2.5
+
+
+def kv_cache_bytes(budget_gb: float, weights_bytes: int) -> int:
+    """预算 - 权重 - 余量 = 给 KV cache 的字节数。
+
+    为什么不让 vLLM 自己算：它的算法是「profile 前后 CUDA 空闲内存的差」，而 Thor 上
+    CUDA 的空闲内存就是内核的 MemFree，不算 page cache。profile 期间内核回收 page
+    cache，「空闲」反而变多，vLLM 直接断言失败 —— N4 上刚做完一次镜像构建（几十 GB
+    的磁盘读写）就启动 Qwen3 4B，实测必现。下完模型紧接着加载也是同样的处境。
+    """
+    kv = budget_gb - weights_bytes / 2**30 - NON_KV_MARGIN_GB
+    if kv < 0.5:
+        raise ValueError(f"内存预算 {budget_gb:.1f} GB 放不下：权重约 {weights_bytes / 2**30:.1f} GB，"
+                         f"另需约 {NON_KV_MARGIN_GB} GB 运行开销，KV cache 至少 0.5 GB")
+    return int(kv * 2**30)
+
+
 def build_command(model_path: str, served_name: str, port: int, serve: dict,
                   budget_gb: float, total_gb: float, executable: str = "vllm",
-                  overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB) -> list[str]:
+                  overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB,
+                  weights_bytes: int | None = None) -> list[str]:
+    frac = memory_fraction(budget_gb, total_gb, overhead_gb)      # 也做「不超过整机 90%」的检查
     cmd = [executable, "serve", model_path,
            "--served-model-name", served_name,
-           "--host", "127.0.0.1", "--port", str(port),
-           "--gpu-memory-utilization", str(memory_fraction(budget_gb, total_gb, overhead_gb))]
+           "--host", "127.0.0.1", "--port", str(port)]
+    if weights_bytes:
+        # KV cache 直接给定（跳过 vLLM 的显存 profiling，见 kv_cache_bytes）。此时
+        # gpu-memory-utilization 只剩启动时那道「比例 × 总量 ≤ CUDA 空闲」的检查在用，
+        # 而 CUDA 空闲 = MemFree，page cache 多时只有 1 GB 上下 —— 压到最低让它别挡路。
+        cmd += ["--kv-cache-memory-bytes", str(kv_cache_bytes(budget_gb, weights_bytes)),
+                "--gpu-memory-utilization", "0.01"]
+    else:
+        cmd += ["--gpu-memory-utilization", str(frac)]
     if serve.get("max_model_len"):
         cmd += ["--max-model-len", str(int(serve["max_model_len"]))]
     if serve.get("tool_call_parser"):
@@ -162,6 +191,7 @@ class VLLMEngine:
                  budget_gb: float, total_gb: float, load_timeout_s: float = 1800.0,
                  executable: str = "vllm", log_lines: int = 500,
                  overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB, cache_dir: str | None = None,
+                 weights_bytes: int | None = None,
                  popen=subprocess.Popen, env: dict | None = None):
         self.model_id = model_id
         self.port = port
@@ -169,7 +199,7 @@ class VLLMEngine:
         self.budget_gb = budget_gb
         self.footprint_gb = footprint_gb(budget_gb, overhead_gb)
         self.command = build_command(model_path, model_id, port, serve, budget_gb,
-                                     total_gb, executable, overhead_gb)
+                                     total_gb, executable, overhead_gb, weights_bytes)
         self._load_timeout_s = load_timeout_s
         self._popen = popen
         self._env = {**cache_env(cache_dir), **(env or {})} if cache_dir else dict(env or {})

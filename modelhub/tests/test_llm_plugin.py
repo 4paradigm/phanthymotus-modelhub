@@ -21,7 +21,7 @@ class _FakeEngine:
     instances = []
 
     def __init__(self, *, model_id, model_path, port, serve, budget_gb, total_gb,
-                 load_timeout_s, executable, overhead_gb, cache_dir):
+                 load_timeout_s, executable, overhead_gb, cache_dir, weights_bytes):
         self.model_id, self.serve, self.budget_gb = model_id, serve, budget_gb
         self.model_path, self.cache_dir = model_path, cache_dir
         self.footprint_gb = budget_gb + overhead_gb

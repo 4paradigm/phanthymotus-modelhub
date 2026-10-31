@@ -327,7 +327,8 @@ class LLMPlugin:
             port=int(self._cfg.get("backend_port", 15750)), serve=serve, budget_gb=budget,
             total_gb=self._total_gb, load_timeout_s=float(self._cfg.get("load_timeout_s", 1800)),
             executable=self._cfg.get("vllm_executable", "vllm"),
-            overhead_gb=self._overhead_gb, cache_dir=self._cache_dir)
+            overhead_gb=self._overhead_gb, cache_dir=self._cache_dir,
+            weights_bytes=spec.weights_bytes)
         configs = dict(state.get("configs") or {})
         configs[spec.id] = saved
         self._save_state({**state, "model": spec.id, "autoload": True, "configs": configs})
@@ -483,7 +484,8 @@ class LLMPlugin:
         eff = self._effective_config(spec, saved)
         from serving.vllm_engine import build_command   # 现在就校验：内存、参数格式
         build_command("/m", spec.id, 1, {k: v for k, v in eff.items() if k != "memory_gb"},
-                      float(eff["memory_gb"]), self._total_gb, overhead_gb=self._overhead_gb)
+                      float(eff["memory_gb"]), self._total_gb, overhead_gb=self._overhead_gb,
+                      weights_bytes=spec.weights_bytes)
         configs[spec.id] = saved
         self._save_state({**state, "configs": configs})
         return self._do_config_get({"model": spec.id})

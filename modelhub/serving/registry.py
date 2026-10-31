@@ -59,6 +59,11 @@ class ModelSpec:
     def size_bytes(self) -> int:
         return sum(int(m["size"]) for m in self.files.values())
 
+    @property
+    def weights_bytes(self) -> int:
+        """权重文件（safetensors）的大小 —— 加载后大致就是它在内存里占的。"""
+        return sum(int(m["size"]) for n, m in self.files.items() if n.endswith(".safetensors"))
+
     def sources(self) -> list[str]:
         """下载源模板列表（带 {file} 占位）。"""
         return [f"{MODELSCOPE_API}/{self.repo}/repo?Revision={self.revision}&FilePath={{file}}"]

@@ -138,3 +138,19 @@ def test_log_lines_are_cleaned_and_our_own_polls_dropped():
     assert log_level("torch.AcceleratorError: CUDA error: boom") == "ERROR"
     assert _OWN_POLLS.search('INFO:     127.0.0.1:1 - "GET /metrics HTTP/1.1" 200 OK')
     assert not _OWN_POLLS.search('INFO:     127.0.0.1:1 - "POST /v1/chat/completions HTTP/1.1" 200 OK')
+
+
+
+def test_kv_cache_is_given_so_vllm_skips_its_memory_profiling():
+    """Thor 上 vLLM 的显存 profiling 拿 MemFree 当空闲；page cache 被回收时它断言失败。"""
+    from serving.vllm_engine import kv_cache_bytes
+    cmd = build_command("/m", "m", 1, {}, budget_gb=16, total_gb=57.8,
+                        weights_bytes=int(8.06e9))
+    i = cmd.index("--kv-cache-memory-bytes")
+    kv_gb = int(cmd[i + 1]) / 2**30
+    assert 5.5 < kv_gb < 6.1                      # 16 - 7.5 GiB 权重 - 2.5 余量
+    assert cmd[cmd.index("--gpu-memory-utilization") + 1] == "0.01"
+    with pytest.raises(ValueError, match="放不下"):
+        kv_cache_bytes(8, int(8.06e9))
+    # 不知道权重大小时退回比例
+    assert "--kv-cache-memory-bytes" not in build_command("/m", "m", 1, {}, 6, 59)
