@@ -37,7 +37,8 @@ import urllib.request
 from pathlib import Path
 
 from serving.downloads import DownloadManager
-from serving.registry import Registry, is_installed, model_dir, pin_from_modelscope, MODEL_ID_RE
+from serving.registry import (MODEL_ID_RE, Registry, installed_vllm_version, is_installed,
+                              model_dir, pin_from_modelscope, unsupported_reason)
 from serving.vllm_engine import (DEFAULT_HOST_OVERHEAD_GB, ERROR, IDLE, LOADING, READY,
                                  STOPPING, VLLMEngine, footprint_gb, total_memory_gb)
 
@@ -97,8 +98,11 @@ class LLMPlugin:
 
     def __init__(self, cfg: dict, *, router, root: str, builtin_registry: str,
                  gateway_url: str, engine_factory=VLLMEngine,
-                 downloads: DownloadManager | None = None, total_gb: float | None = None):
+                 downloads: DownloadManager | None = None, total_gb: float | None = None,
+                 engine_version: str | None = None):
         self._cfg = cfg
+        self._engine_version = (engine_version if engine_version is not None
+                                else installed_vllm_version())
         root = Path(root)
         self._models_root = str(root / "models")
         self._cache_dir = str(root / "cache")
@@ -165,6 +169,7 @@ class LLMPlugin:
             "serving": {"base_url": f"{self._gateway_url}/v1",
                         "models": [{"id": r["id"], "state": r["state"]} for r in self._routes()]},
             "engine": st,
+            "engine_version": self._engine_version,
             "memory": {"total_gb": round(self._total_gb, 1),
                        "overhead_gb": self._overhead_gb,
                        "default_budget_gb": self._cfg.get("default_memory_gb", 16)},
@@ -188,11 +193,12 @@ class LLMPlugin:
             row["footprint_gb"] = footprint_gb(
                 float(spec.serve.get("memory_gb") or default_budget), self._overhead_gb)
             row["installed"] = is_installed(spec, self._models_root)
+            row["unsupported"] = unsupported_reason(spec, self._engine_version)
             row["download"] = jobs.get(spec.id)
             row["loaded"] = bool(current and current.model_id == spec.id)
             out.append(row)
         return {"models": out, "total_gb": round(self._total_gb, 1),
-                "overhead_gb": self._overhead_gb}
+                "overhead_gb": self._overhead_gb, "engine_version": self._engine_version}
 
     def _do_add_model(self, args):
         repo = str(args.get("repo") or "").strip()
@@ -232,6 +238,9 @@ class LLMPlugin:
     def _do_load(self, args):
         """选定一个模型：没下载就先下载，下完自动加载。立即返回，进度看 info。"""
         spec = self._registry.get(self._model_arg(args))
+        reason = unsupported_reason(spec, self._engine_version)
+        if reason:
+            raise ValueError(f"{spec.title}：{reason}")   # 别为一个起不来的模型下几个 GB
         budget = float(args.get("memory_gb") or spec.serve.get("memory_gb")
                        or self._cfg.get("default_memory_gb", 16))
         # 部署级默认（如 CUDA graph 捕获批大小）垫底，模型自己的参数覆盖它

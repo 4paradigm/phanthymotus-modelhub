@@ -51,6 +51,9 @@ class ModelSpec:
     serve: dict = field(default_factory=dict)
     note: str = ""
     builtin: bool = True
+    # 能加载这个模型的最低 vLLM 版本。基础镜像按 JetPack 线不同、vLLM 版本差很多
+    # （jp71 是 0.11，jp72 是 0.19），新架构在旧 vLLM 上会在引擎初始化深处才失败。
+    min_vllm: str = ""
 
     @property
     def size_bytes(self) -> int:
@@ -66,6 +69,7 @@ class ModelSpec:
             "repo": self.repo, "revision": self.revision,
             "size_gb": round(self.size_bytes / 1e9, 2), "files": len(self.files),
             "serve": dict(self.serve), "note": self.note, "builtin": self.builtin,
+            "min_vllm": self.min_vllm,
         }
 
 
@@ -95,9 +99,13 @@ def _validate(model_id: str, raw: dict, builtin: bool) -> ModelSpec:
     serve = raw.get("serve") or {}
     if not isinstance(serve, dict):
         raise ValueError(f"{model_id}: serve 必须是 mapping")
+    min_vllm = str(raw.get("min_vllm") or "")
+    if min_vllm and not re.match(r"^\d+(\.\d+)*$", min_vllm):
+        raise ValueError(f"{model_id}: min_vllm 必须是版本号，如 0.19，收到 {min_vllm!r}")
     return ModelSpec(id=model_id, title=str(raw.get("title") or model_id), kind=kind,
                      repo=str(repo), revision=str(revision), files=dict(files),
-                     serve=dict(serve), note=str(raw.get("note") or ""), builtin=builtin)
+                     serve=dict(serve), note=str(raw.get("note") or ""), builtin=builtin,
+                     min_vllm=min_vllm)
 
 
 def _load_file(path: Path, builtin: bool) -> dict[str, ModelSpec]:
@@ -156,6 +164,32 @@ class Registry:
         tmp = self.user_path.with_suffix(".tmp")
         tmp.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
         os.replace(tmp, self.user_path)
+
+
+# ── 引擎版本 ──────────────────────────────────────────────────────────────────
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    """'0.11.0+582e4e37.nv25.11' -> (0, 11, 0)：只取开头的数字段。"""
+    m = re.match(r"^(\d+(?:\.\d+)*)", version or "")
+    return tuple(int(p) for p in m.group(1).split(".")) if m else ()
+
+
+def unsupported_reason(spec: ModelSpec, engine_version: str) -> str:
+    """本机引擎能不能加载这个模型；能就返回空串。版本未知时不拦。"""
+    if not spec.min_vllm or not version_tuple(engine_version):
+        return ""
+    if version_tuple(engine_version) < version_tuple(spec.min_vllm):
+        return (f"需要 vLLM ≥ {spec.min_vllm}，本机是 {engine_version.split('+')[0]}"
+                f"（基础镜像受宿主机驱动的 CUDA 版本限制，见 Dockerfile.jetson）")
+    return ""
+
+
+def installed_vllm_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("vllm")
+    except Exception:       # noqa: BLE001 — 本地跑测试时没有 vLLM
+        return ""
 
 
 # ── 本地安装状态 ──────────────────────────────────────────────────────────────

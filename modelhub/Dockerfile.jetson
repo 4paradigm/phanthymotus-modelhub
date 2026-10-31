@@ -10,7 +10,14 @@
 ARG JP_VERSION=72
 # 基础镜像：NVIDIA NGC 的 vLLM 容器（arm64 版自带对 Thor sm_110 编译的 torch +
 # vLLM），原样转存到 TCR，不在这里重装推理栈。转存命令见 README「基础镜像」。
-#   jp72-vllm  ←  nvcr.io/nvidia/vllm:26.10-py3 (arm64)  vLLM 0.31, CUDA 13.4
+#
+# **镜像的 CUDA 不能高于宿主机驱动的 CUDA**：驱动（libcuda）只能用宿主机的，它的
+# PTX JIT 不认识更新工具链生成的 PTX。N4（R38.4，驱动 13.0）上实测，CUDA 13.4 的
+# 镜像在 vLLM 初始化时报 `the provided PTX was compiled with an unsupported toolchain`；
+# torch 的基础算子照常 —— 它带了 sm_110 的机器码，不经过 JIT。所以每条 JetPack 线
+# 取驱动版本以内最新的那个 NGC 版本：
+#   jp71-vllm  ←  nvcr.io/nvidia/vllm:25.11-py3  CUDA 13.0.2  vLLM 0.11.0   (L4T R38.4, 驱动 13.0)
+#   jp72-vllm  ←  nvcr.io/nvidia/vllm:26.04-py3  CUDA 13.2.1  vLLM 0.19.0   (L4T R39.2, 驱动 13.2)
 ARG BASE_IMAGE=bj-warehouse.tencentcloudcr.com/phanthy-motus/jetson-base:jp${JP_VERSION}-vllm
 FROM ${BASE_IMAGE}
 

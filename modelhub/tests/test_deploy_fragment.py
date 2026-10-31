@@ -20,11 +20,14 @@ def service():
     return doc["modelhub"]
 
 
-def test_gpu_comes_in_through_cdi_not_the_nvidia_runtime(service):
-    """Thor 上 dockerd 没加载 nvidia runtime，写 runtime: nvidia 容器起不来。"""
-    assert "runtime" not in service
-    devices = service["deploy"]["resources"]["reservations"]["devices"]
-    assert {"driver": "cdi", "device_ids": ["nvidia.com/gpu=all"]} in devices
+def test_gpu_comes_in_through_the_nvidia_runtime(service):
+    """驱动库只能用宿主机的，由 nvidia runtime 挂进来；和 perception/actucore 同一种写法。
+
+    不用 CDI：星源智 N4（R38.4）上 nvidia runtime 是默认 runtime、没有 CDI 描述文件，
+    CDI 设备请求在那里直接失败。
+    """
+    assert service["runtime"] == "nvidia"
+    assert "deploy" not in service
 
 
 def test_image_placeholder_and_container_name(service):

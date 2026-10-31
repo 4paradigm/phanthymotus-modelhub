@@ -7,6 +7,7 @@
 # 不拷一份 —— 两份必然漂移。registry 凭证同理，默认读 phanthymotus/deploy/.env。
 #
 #   ./deploy/build_modelhub.sh --mirror tuna                 # JetPack 7.2（默认）
+#   ./deploy/build_modelhub.sh --jp-version 7.1 --mirror tuna   # L4T R38.4 的 Thor
 #   PHANTHYMOTUS_DIR=/path/to/phanthymotus ./deploy/build_modelhub.sh
 #
 # phanthymotus 检出默认在本仓库旁边（../phanthymotus），本地和 VPC 构建机
@@ -61,11 +62,16 @@ BUILD_CONTEXT="${REPO_ROOT}"
 TAG="release.${DATE}.${COMMIT}-jetson-jp${JP_VERSION}"
 
 jetpack_vars "${JP_VERSION}" || exit 1
-if [ "${JP_ARG}" != "72" ]; then
-    echo "ModelHub 目前只有 JetPack 7.2（Thor）的基础镜像，收到 ${JP_VERSION}" >&2
-    exit 1
-fi
+case "${JP_ARG}" in
+    71|72) ;;   # 基础镜像见 modelhub/Dockerfile.jetson：每条线一个，CUDA 不能高于驱动
+    *) echo "ModelHub 只有 JetPack 7.1 / 7.2（Thor）的基础镜像，收到 ${JP_VERSION}" >&2; exit 1 ;;
+esac
 BUILD_ARGS=("JP_VERSION=${JP_ARG}")
+# 默认用 TCR 上的 jetson-base:jp<线>-vllm；在没有 TCR 凭证的 rig 上用 prepare 脚本
+# 本地构建的基础镜像时，传 BASE_IMAGE=local/phanthy-motus/jetson-base:jp71-vllm
+if [ -n "${BASE_IMAGE:-}" ]; then
+    BUILD_ARGS+=("BASE_IMAGE=${BASE_IMAGE}")
+fi
 # build_common.sh 的 do_build 会把这个数组原样加到 docker build 上
 EXTRA_BUILD_FLAGS=(--build-context "phanthymotus=${PHANTHYMOTUS_DIR}")
 
@@ -75,6 +81,7 @@ FULL_IMAGE="${REGISTRY}/${IMAGE_NAMESPACE}/modelhub:${TAG}"
 echo "============================================"
 echo "Building modelhub image (Jetson only)"
 echo "JetPack: ${JP_VERSION}"
+echo "Base   : ${BASE_IMAGE:-bj-warehouse.tencentcloudcr.com/phanthy-motus/jetson-base:jp${JP_ARG}-vllm}"
 echo "Image  : ${FULL_IMAGE}"
 echo "Shared : phanthymotus@${PHANTHYMOTUS_COMMIT} (${PHANTHYMOTUS_DIR})"
 echo "Arch   : ${ARCH} (native=${IS_ARM64})"
