@@ -83,7 +83,7 @@ class _FakeDownloads:
         return {k: dict(v) for k, v in self._jobs.items()}
 
 
-CFG = {"default_memory_gb": 8, "backend_port": 15750, "host_overhead_gb": 4.4,
+CFG = {"default_memory_gb": 8, "backend_port": 15750, "host_overhead_gb": 4.4, "metrics": False,
        "serve_defaults": {"max_num_seqs": 8, "cudagraph_capture_sizes": [1, 2, 4, 8]}}
 
 
@@ -241,8 +241,8 @@ def test_switching_stops_the_old_engine_first_and_autoload_restores(make, tmp_pa
     assert _wait(lambda: plugin.dispatch("llm", {"action": "info"})["model"] == "qwen3-8b-fp8")
     assert _FakeEngine.instances[0].stopped.is_set()     # 统一内存装不下两份
     saved = json.loads((tmp_path / "root" / "state" / "llm.json").read_text())
-    assert saved == {"model": "qwen3-8b-fp8", "memory_gb": 22.0,
-                     "max_model_len": 32768, "autoload": True}
+    assert saved == {"model": "qwen3-8b-fp8", "autoload": True,
+                     "configs": {"qwen3-0.6b": {}, "qwen3-8b-fp8": {"memory_gb": 22.0}}}
 
     # 容器重启：新实例自动加载上次的选择
     plugin2, router2 = make()
@@ -281,3 +281,103 @@ def test_a_model_too_new_for_the_local_vllm_is_refused_before_downloading(make):
     r = plugin.dispatch("llm", {"action": "load", "model": "phanthymotus-0.1"})
     assert "需要 vLLM" in r["error"]["message"]
     assert plugin.fake_downloads.started == []
+
+
+def test_launch_config_is_saved_per_model_and_used_on_the_next_load(make, tmp_path):
+    plugin, _ = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    got = plugin.dispatch("llm", {"action": "config_get", "model": "qwen3-0.6b"})
+    assert got["config"]["max_model_len"] == 8192 and got["overridden"] == []
+    r = plugin.dispatch("llm", {"action": "config_set", "model": "qwen3-0.6b",
+                                "values": {"max_model_len": 4096, "max_num_seqs": 4,
+                                           "cudagraph_capture_sizes": "1, 2 4"}})
+    assert r["config"]["cudagraph_capture_sizes"] == [1, 2, 4]
+    assert r["overridden"] == ["cudagraph_capture_sizes", "max_model_len", "max_num_seqs"]
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: _FakeEngine.instances)
+    eng = _FakeEngine.instances[-1]
+    assert eng.serve["max_model_len"] == 4096 and eng.serve["max_num_seqs"] == 4
+    # 传空恢复默认
+    r = plugin.dispatch("llm", {"action": "config_set", "model": "qwen3-0.6b",
+                                "values": {"max_model_len": None}})
+    assert r["config"]["max_model_len"] == 8192
+
+
+def test_config_set_rejects_what_would_not_start(make):
+    plugin, _ = make()
+    r = plugin.dispatch("llm", {"action": "config_set", "model": "qwen3-0.6b",
+                                "values": {"memory_gb": 55}})
+    assert "90%" in r["error"]["message"]          # 59 GB 的机器上 55 + 4.4 装不下
+    r = plugin.dispatch("llm", {"action": "config_set", "model": "qwen3-0.6b",
+                                "values": {"nope": 1}})
+    assert "不认识" in r["error"]["message"]
+
+
+def test_old_state_file_is_migrated_into_per_model_config(make, tmp_path):
+    state = tmp_path / "root" / "state"
+    state.mkdir(parents=True)
+    (state / "llm.json").write_text(json.dumps({"model": "qwen3-0.6b", "memory_gb": 6.0,
+                                                "max_model_len": 8192, "autoload": False}))
+    plugin, _ = make()
+    got = plugin.dispatch("llm", {"action": "config_get", "model": "qwen3-0.6b"})
+    assert got["config"]["memory_gb"] == 6.0 and "memory_gb" in got["overridden"]
+
+
+def test_autoload_toggle(make):
+    plugin, _ = make()
+    assert plugin.dispatch("llm", {"action": "set_autoload", "enabled": False})["autoload"] is False
+    assert plugin.dispatch("llm", {"action": "config_get", "model": "qwen3-0.6b"})["autoload"] is False
+
+
+def test_models_report_disk(make, tmp_path):
+    plugin, _ = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    r = plugin.dispatch("llm", {"action": "models"})
+    rows = {m["id"]: m for m in r["models"]}
+    assert rows["qwen3-0.6b"]["disk_gb"] > 1.0 and rows["qwen3-8b-fp8"]["disk_gb"] == 0
+    assert r["disk"]["total_gb"] > 0 and r["disk"]["models_gb"] >= rows["qwen3-0.6b"]["disk_gb"]
+
+
+def test_playground_conversation_survives_and_can_be_cleared(make, tmp_path):
+    """回到页面之前的内容还在：对话存在服务端，回复由服务端在生成完时追加。"""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.end_headers()
+            for piece in ("你", "好"):
+                self.wfile.write(f'data: {json.dumps({"choices": [{"delta": {"content": piece}}]})}\n\n'.encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    plugin, _ = make()
+    plugin._gateway_url = f"http://127.0.0.1:{srv.server_address[1]}"
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: plugin.dispatch("llm", {"action": "info"})["state"] == "ready")
+    plugin.dispatch("llm", {"action": "chat_start", "text": "嗨"})
+    assert _wait(lambda: len(plugin.dispatch("llm", {"action": "chat_history"})["messages"]) == 2)
+
+    plugin2, _ = make()                                  # 页面关了、容器重启了也一样
+    msgs = plugin2.dispatch("llm", {"action": "chat_history"})["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[1]["content"] == "你好" and msgs[1]["state"] == "done"
+    assert plugin2.dispatch("llm", {"action": "chat_clear"})["messages"] == []
+    assert plugin2.dispatch("llm", {"action": "chat_history"})["messages"] == []
+    srv.shutdown()
+
+
+def test_cancelling_the_download_a_load_waits_for_drops_the_pending_load(make):
+    plugin, _ = make()
+    plugin.fake_downloads.cancel = lambda mid: {"model": mid, "state": "cancelled"}
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-8b-fp8"})
+    assert _wait(lambda: plugin.fake_downloads.started)
+    plugin.dispatch("llm", {"action": "download_cancel", "model": "qwen3-8b-fp8"})
+    assert plugin.dispatch("llm", {"action": "info"})["state"] == "idle"

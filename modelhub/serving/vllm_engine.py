@@ -17,6 +17,7 @@ from __future__ import annotations
 import collections
 import json
 import logging
+import re
 import os
 import signal
 import subprocess
@@ -130,6 +131,29 @@ def cache_env(cache_dir: str) -> dict:
     }
 
 
+# vLLM 的日志带终端颜色码（`\x1b[1;36m(APIServer pid=139)\x1b[0;0m INFO ...`），原样显示在
+# 运维页上就是一串方框；进程前缀 `(APIServer pid=139)` 对看日志的人也没有用。
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_PROC_PREFIX = re.compile(r"^\((?:APIServer|EngineCore[^)]*) pid=\d+\)\s*")
+LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+_LEVEL = re.compile(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\b")
+
+
+def clean_log_line(line: str) -> str:
+    return _PROC_PREFIX.sub("", _ANSI.sub("", line)).rstrip()
+
+
+def log_level(line: str) -> str:
+    """一行日志的级别；Traceback 和异常行按 ERROR 算，认不出的按 INFO。"""
+    m = _LEVEL.search(line[:80])
+    if m:
+        lv = m.group(1)
+        return {"WARN": "WARNING", "CRITICAL": "ERROR"}.get(lv, lv)
+    if line.startswith(("Traceback", "  File ")) or "Error:" in line[:120]:
+        return "ERROR"
+    return "INFO"
+
+
 class VLLMEngine:
     """一个模型、一个进程、一个内部端口。换模型 = 停掉这个、起一个新的。"""
 
@@ -217,14 +241,27 @@ class VLLMEngine:
                 "last_log": self._logs[-1] if self._logs else "",
             }
 
+    def pgid(self) -> int | None:
+        """推理进程组号（start_new_session，所以等于 vLLM 主进程 pid）；监控按它汇总内存。"""
+        with self._lock:
+            return self._proc.pid if self._proc else None
+
     @property
     def state(self) -> str:
         with self._lock:
             return self._state
 
-    def logs(self, lines: int = 200) -> list[str]:
+    def logs(self, lines: int = 200, level: str = "", query: str = "") -> list[str]:
+        """最近的日志。level 只保留该级别及以上；query 按子串过滤（不区分大小写）。"""
         with self._lock:
-            return list(self._logs)[-max(1, min(int(lines), self._logs.maxlen)):]
+            out = list(self._logs)
+        if level:
+            floor = LEVELS.index(level.upper()) if level.upper() in LEVELS else 0
+            out = [l for l in out if LEVELS.index(log_level(l)) >= floor]
+        if query:
+            q = query.lower()
+            out = [l for l in out if q in l.lower()]
+        return out[-max(1, min(int(lines), self._logs.maxlen)):]
 
     # ── 内部 ────────────────────────────────────────────────────────────────
 
@@ -235,7 +272,7 @@ class VLLMEngine:
 
     def _pump_logs(self, proc) -> None:
         for raw in iter(proc.stdout.readline, b""):
-            line = raw.decode("utf-8", "replace").rstrip()
+            line = clean_log_line(raw.decode("utf-8", "replace"))
             if line:
                 with self._lock:
                     self._logs.append(line)

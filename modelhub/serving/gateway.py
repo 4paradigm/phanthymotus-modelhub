@@ -43,6 +43,16 @@ class Router:
     def __init__(self):
         self._providers: list = []
         self._lock = threading.Lock()
+        # 累计计数，监控页按差分画请求率 / 错误率
+        self.stats = {"requests": 0, "errors_4xx": 0, "errors_5xx": 0, "aborted": 0}
+
+    def count(self, key: str) -> None:
+        with self._lock:
+            self.stats[key] = self.stats.get(key, 0) + 1
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return dict(self.stats)
 
     def add_provider(self, provider) -> None:
         with self._lock:
@@ -92,6 +102,8 @@ def make_handler(router: Router, api_key: str = ""):
             log.debug("[gateway] %s %s", self.address_string(), fmt % args)
 
         def _reply(self, status: int, body: bytes, extra: dict | None = None):
+            if self.path.startswith("/v1/") and self.command == "POST":
+                router.count("errors_5xx" if status >= 500 else "errors_4xx" if status >= 400 else "requests")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -156,6 +168,11 @@ def make_handler(router: Router, api_key: str = ""):
             except OSError as error:
                 conn.close()
                 return self._reply(502, _error_body(502, f"后端 {route['id']} 连不上：{error}"))
+            router.count("requests")
+            if resp.status >= 500:
+                router.count("errors_5xx")
+            elif resp.status >= 400:
+                router.count("errors_4xx")
             try:
                 self.send_response(resp.status)
                 for key, value in resp.getheaders():
@@ -174,6 +191,7 @@ def make_handler(router: Router, api_key: str = ""):
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
+                router.count("aborted")
                 log.info("[gateway] client went away mid-response; aborting %s", route["id"])
             except OSError as error:
                 log.warning("[gateway] backend %s broke mid-response: %s", route["id"], error)

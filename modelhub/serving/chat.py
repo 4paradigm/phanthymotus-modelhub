@@ -42,7 +42,8 @@ def validate_messages(messages) -> list[dict]:
 
 class ChatJob:
     def __init__(self, gateway_url: str, model: str, messages: list[dict], *,
-                 max_tokens: int = 1024, think: bool = False, opener=urllib.request.urlopen):
+                 max_tokens: int = 1024, think: bool = False, opener=urllib.request.urlopen,
+                 on_finish=None):
         self.id = uuid.uuid4().hex[:12]
         self.model = model
         self._url = f"{gateway_url.rstrip('/')}/v1/chat/completions"
@@ -53,6 +54,7 @@ class ChatJob:
             "chat_template_kwargs": {"enable_thinking": bool(think)},
         }
         self._opener = opener
+        self._on_finish = on_finish
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._resp = None
@@ -101,10 +103,16 @@ class ChatJob:
 
     def _finish(self, state: str, error: str = "") -> None:
         with self._lock:
-            if self.state == "running":
+            first = self.state == "running"
+            if first:
                 self.state, self.error = state, error
             self.t_end = self.t_end or time.monotonic()
             self._resp = None
+        if first and self._on_finish:
+            try:
+                self._on_finish(self)
+            except Exception:           # noqa: BLE001 — 存档失败不能影响这次回复
+                pass
 
     def _run(self) -> None:
         req = urllib.request.Request(self._url, json.dumps(self._body).encode(),

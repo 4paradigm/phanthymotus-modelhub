@@ -44,7 +44,7 @@ modelhub/
     gateway.py         unified OpenAI-compatible endpoint (port 15741), routes by `model`
     vllm_engine.py     one `vllm serve` process: start, health, logs, stop
     registry.py        model rows: ModelScope source, pinned revision, size + SHA256 per file
-    downloads.py       background downloads via perception's model_downloader
+    downloads.py       download queue: resume, pause, cancel, verify
   tools/pin_model.py   generate a registry row from ModelScope
   Dockerfile.jetson    FROM jetson-base:jp72-vllm
   deploy/service.yml   compose fragment shipped in the image
