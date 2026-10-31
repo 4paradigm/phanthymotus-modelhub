@@ -93,12 +93,12 @@ def make(tmp_path):
     _FakeEngine.instances.clear()
     downloads = _FakeDownloads(str(tmp_path / "root" / "models"))
 
-    def build(engine_version=""):
+    def build(engine_version="", cuda_problem=""):
         router = Router()
         plugin = LLMPlugin(CFG, router=router, root=str(tmp_path / "root"),
                            builtin_registry=str(BUILTIN), gateway_url="http://127.0.0.1:15741",
                            engine_factory=_FakeEngine, downloads=downloads, total_gb=59.0,
-                           engine_version=engine_version)
+                           engine_version=engine_version, cuda_problem=cuda_problem)
         plugin.fake_downloads = downloads
         return plugin, router
     return build
@@ -420,3 +420,13 @@ def test_a_context_longer_than_the_kv_cache_is_refused_when_saved(make, tmp_path
     ok = plugin.dispatch("llm", {"action": "config_set", "model": "qwen3-4b-instruct-2507",
                                  "values": {"max_model_len": 106496, "memory_gb": 25}})
     assert "error" not in ok and ok["kv"]["bytes_per_token"] == 147456
+
+
+def test_an_image_newer_than_the_driver_says_so_and_does_not_start(make):
+    """thor_pack（JetPack 7.1）装上 jp7.2 镜像那次：以前去启动 vLLM，报一段堆栈。"""
+    problem = "这个 ModelHub 镜像带的是 CUDA 13.2，这台机器的显卡驱动只支持到 CUDA 13.0（JetPack 7.1）"
+    plugin, _ = make(cuda_problem=problem)
+    info = plugin.dispatch("llm", {"action": "info"})
+    assert info["state"] == "error" and info["message"] == problem
+    r = plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert problem in str(r) and not _FakeEngine.instances

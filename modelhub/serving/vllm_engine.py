@@ -355,8 +355,7 @@ class VLLMEngine:
             code = proc.poll()
             if code is not None:
                 if not self._stop_requested.is_set():
-                    tail = " | ".join(self.logs(5))
-                    self._fail(f"vLLM 退出（code {code}）：{tail}")
+                    self._fail(explain_exit(code, self.logs(500)))
                     with self._lock:
                         self._proc = None
                 return
@@ -375,6 +374,29 @@ class VLLMEngine:
                 self._stop_requested.wait(1.0)
             else:
                 self._stop_requested.wait(5.0)
+
+
+# vLLM 退出时日志最后几行通常是 "Engine core initialization failed. See root cause
+# above" 这类外层堆栈，真正的原因在前面。先找已知的根因，说清楚该怎么办；找不到才
+# 退回到贴最后几行。
+_KNOWN_FAILURES = (
+    (("CUDA_ERROR_SYSTEM_DRIVER_MISMATCH", "unsupported toolchain",
+      "unsupported display driver / cuda driver combination"),
+     "显卡驱动和镜像里的 CUDA 版本不匹配（镜像比驱动新）。"
+     "请到「设置 → 部署」把 ModelHub 换成和本机 JetPack 对应的版本。"),
+    (("CUDA out of memory", "No available memory for the cache blocks",
+      "Insufficient memory", "Cannot allocate memory"),
+     "内存不够。到「服务」里把内存预算或上下文调小，或者先关掉占内存的其他程序。"),
+)
+
+
+def explain_exit(code: int, logs: list[str]) -> str:
+    text = "\n".join(logs)
+    for needles, message in _KNOWN_FAILURES:
+        if any(n.lower() in text.lower() for n in needles):
+            return message
+    tail = " | ".join(logs[-5:])
+    return f"vLLM 退出（code {code}）：{tail}"
 
 
 def _kill_group(proc, sig) -> None:

@@ -36,6 +36,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from serving import cuda_compat
 from serving.chat import MAX_HISTORY_CHARS, ChatJob
 from serving.downloads import DownloadManager, dir_bytes, disk_usage
 from serving.bench import BenchRunner
@@ -132,8 +133,12 @@ class LLMPlugin:
     def __init__(self, cfg: dict, *, router, root: str, builtin_registry: str,
                  gateway_url: str, engine_factory=VLLMEngine,
                  downloads: DownloadManager | None = None, total_gb: float | None = None,
-                 engine_version: str | None = None):
+                 engine_version: str | None = None, cuda_problem: str | None = None):
         self._cfg = cfg
+        # 镜像的 CUDA 比本机驱动新时这里是一句说明，模型就不必启动了（见 cuda_compat）
+        self._cuda_problem = cuda_problem if cuda_problem is not None else cuda_compat.check()
+        if self._cuda_problem:
+            log.error("[llm] %s", self._cuda_problem)
         self._engine_version = (engine_version if engine_version is not None
                                 else installed_vllm_version())
         root = Path(root)
@@ -310,6 +315,8 @@ class LLMPlugin:
 
     def _do_load(self, args):
         """选定一个模型：没下载就先下载，下完自动加载。立即返回，进度看 info。"""
+        if self._cuda_problem:
+            raise RuntimeError(self._cuda_problem)          # 跑不起来就别去启动 vLLM
         spec = self._registry.get(self._model_arg(args))
         reason = unsupported_reason(spec, self._engine_version)
         if reason:
@@ -701,6 +708,8 @@ class LLMPlugin:
 
     def _card_state(self) -> tuple[str, str, str | None]:
         """(state, message, model)：卡片现在在干什么，一句话说给人看。"""
+        if self._cuda_problem:
+            return "error", self._cuda_problem, None
         with self._lock:
             pending = dict(self._pending) if self._pending else None
             engine = self._engine
