@@ -167,10 +167,30 @@ def test_info_reports_serving_for_agent_core_discovery(make, tmp_path):
     _install(tmp_path, plugin, "qwen3-0.6b")
     plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "memory_gb": 6})
     assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    _FakeEngine.instances[-1].kv_tokens = 30000
     info = plugin.dispatch("llm", {"action": "info"})
     assert info["busy"] is False
-    assert info["serving"] == {"base_url": "http://127.0.0.1:15741/v1",
-                               "models": [{"id": "qwen3-0.6b", "state": "ready"}]}
+    serving = info["serving"]
+    assert serving["base_url"] == "http://127.0.0.1:15741/v1"
+    (loaded,) = serving["models"]
+    assert loaded["id"] == "qwen3-0.6b" and loaded["state"] == "ready"
+    assert loaded["title"] == "Qwen3 0.6B"
+    # 一个会话能放多少 token：上下文上限和 KV 容量取小的
+    limit = loaded["max_model_len"]
+    assert loaded["context_tokens"] == (min(limit, 30000) if limit else 30000)
+    assert [m["id"] for m in serving["installed"]] == ["qwen3-0.6b"]
+
+
+def test_info_lists_installed_models_even_with_nothing_loaded(make, tmp_path):
+    plugin, _ = make()
+    assert plugin.dispatch("llm", {"action": "info"})["serving"]["installed"] == []
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "config_set", "model": "qwen3-0.6b",
+                            "values": {"max_model_len": 8192}})
+    serving = plugin.dispatch("llm", {"action": "info"})["serving"]
+    assert serving["models"] == []
+    assert serving["installed"] == [{"id": "qwen3-0.6b", "title": "Qwen3 0.6B",
+                                     "max_model_len": 8192, "unsupported": ""}]
 
 
 def test_loading_a_model_not_on_disk_downloads_it_first_with_progress(make):

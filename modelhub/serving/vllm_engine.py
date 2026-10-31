@@ -221,6 +221,7 @@ class VLLMEngine:
                  weights_bytes: int | None = None,
                  popen=subprocess.Popen, env: dict | None = None):
         self.model_id = model_id
+        self.serve = dict(serve)
         self.port = port
         self.base_url = f"http://127.0.0.1:{port}/v1"
         self.budget_gb = budget_gb
