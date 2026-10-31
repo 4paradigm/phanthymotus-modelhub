@@ -167,6 +167,8 @@ button:disabled { cursor: default; opacity: .4; }
 .btable th:nth-child(1) { width: 34px; } .btable th:nth-child(2) { width: 96px; } .btable th:nth-child(3) { width: auto; }
 .btable th:nth-child(4), .btable th:nth-child(5) { width: 104px; } .btable th:nth-child(6), .btable th:nth-child(7) { width: 112px; }
 .btable th:nth-child(8) { width: 64px; }
+.btable th:nth-child(4), .btable th:nth-child(5) { width: 92px; } .btable th:nth-child(6), .btable th:nth-child(7) { width: 104px; }
+.btable .name span { white-space: normal; }
 .cmp { margin-bottom: 18px; }
 .cmp h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
 .cmp h3 .muted { font-weight: 400; }
@@ -662,7 +664,9 @@ function renderBench(full) {
        <button class="btn primary" data-bench="start" ${ready ? '' : 'disabled'}>${ready ? `测试 ${esc(titleOf(current()))}` : '先启动一个模型'}</button>
        <span class="muted" style="margin-left:10px">大约 1–3 分钟</span>`;
   if (!full && $('benchTop')) { $('benchTop').innerHTML = top; return; }
-  const sel = S.benchSel || (S.benchSel = new Set(runs.slice(0, 2).map(r => r.id)));
+  // 默认选最近两次 —— 要等记录取回来再定，不然第一次渲染时就定成了空集
+  if (!S.benchSel && S.benchRuns) S.benchSel = new Set(runs.slice(0, 2).map(r => r.id));
+  const sel = S.benchSel || new Set();
   const picked = runs.filter(r => sel.has(r.id));
   $('page').innerHTML = `<div class="wrap">
     <div class="section" id="benchTop">${top}</div>
@@ -705,6 +709,7 @@ $('page').addEventListener('click', async e => {
 });
 $('page').addEventListener('change', e => {
   if (S.page !== 'bench' || !e.target.dataset.pick) return;
+  if (!S.benchSel) S.benchSel = new Set();
   e.target.checked ? S.benchSel.add(e.target.dataset.pick) : S.benchSel.delete(e.target.dataset.pick);
   renderBench(true);
 });
