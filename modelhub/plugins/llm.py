@@ -36,6 +36,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from serving.chat import ChatJob, validate_messages
 from serving.downloads import DownloadManager
 from serving.registry import (MODEL_ID_RE, Registry, installed_vllm_version, is_installed,
                               model_dir, pin_from_modelscope, unsupported_reason)
@@ -49,6 +50,7 @@ WORKBENCH_HTML = Path(__file__).with_name("llm_workbench.html")
 
 # 运维页能调的全部动作。info 和 stop 是工作台协议要求必须有的。
 ACTIONS = ("ui", "info", "start", "stop", "models", "add_model", "remove_model",
+           "chat_start", "chat_poll", "chat_stop",
            "download", "delete_files", "load", "unload", "logs", "test")
 PUBLIC_ACTIONS = ("info",)
 
@@ -72,6 +74,12 @@ TOOLS = [{
             "tool_call_parser": {"type": "string"},
             "reasoning_parser": {"type": "string"},
             "prompt": {"type": "string"},
+            "messages": {"type": "array", "description": "对话：[{role, content}]"},
+            "think": {"type": "boolean"},
+            "max_tokens": {"type": "integer"},
+            "job": {"type": "string"},
+            "text_from": {"type": "integer"},
+            "reasoning_from": {"type": "integer"},
             "lines": {"type": "integer"},
             "instance_id": {"type": "string"},
             "_trace_id": {"type": "string"},
@@ -91,6 +99,17 @@ def _tool_declaration() -> list[dict]:
     schema["x-workbench"] = {"protocol": PROTOCOL, "kind": "settings", "title": "本地大模型",
                              "entry": "ui", "actions": list(ACTIONS)}
     return tools
+
+
+def _mem_available_gb(meminfo: str = "/proc/meminfo") -> float:
+    try:
+        with open(meminfo) as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024 * 1024)
+    except OSError:
+        pass
+    return 0.0
 
 
 class LLMPlugin:
@@ -119,6 +138,7 @@ class LLMPlugin:
         self._lock = threading.RLock()          # 守 _engine / _pending / _generation
         self._switch_lock = threading.Lock()    # 串行化 load/unload，不阻塞 info
         self._engine: VLLMEngine | None = None
+        self._chat: ChatJob | None = None       # 运维页里当前的那一个对话任务
         # 「已选、还没起引擎」阶段（下载中 / 下载失败）。引擎起来后它就清空。
         self._pending: dict | None = None
         # 每次 load/unload +1。后台的「下载→加载」线程拿着自己那一代的号，号过期就
@@ -171,6 +191,7 @@ class LLMPlugin:
             "engine": st,
             "engine_version": self._engine_version,
             "memory": {"total_gb": round(self._total_gb, 1),
+                       "available_gb": round(_mem_available_gb(), 1),
                        "overhead_gb": self._overhead_gb,
                        "default_budget_gb": self._cfg.get("default_memory_gb", 16)},
             "selected": saved,
@@ -277,6 +298,38 @@ class LLMPlugin:
         threading.Thread(target=self._switch_to, args=(None,), daemon=True,
                          name="llm-unload").start()
         return {"unloading": True}
+
+    def _do_chat_start(self, args):
+        engine = self._current()
+        if not engine or engine.state != READY:
+            raise RuntimeError("没有就绪的模型")
+        messages = validate_messages(args.get("messages"))
+        with self._lock:
+            old = self._chat
+        if old:
+            old.stop()                  # 一次只跑一个：新消息取消旧的
+        job = ChatJob(self._gateway_url, engine.model_id, messages,
+                      max_tokens=int(args.get("max_tokens") or 1024),
+                      think=bool(args.get("think"))).start()
+        with self._lock:
+            self._chat = job
+        return {"job": job.id, "model": job.model}
+
+    def _chat_job(self, args) -> ChatJob:
+        with self._lock:
+            job = self._chat
+        if not job or job.id != str(args.get("job") or ""):
+            raise KeyError("这个对话任务已经不在了")
+        return job
+
+    def _do_chat_poll(self, args):
+        return self._chat_job(args).poll(int(args.get("text_from") or 0),
+                                         int(args.get("reasoning_from") or 0))
+
+    def _do_chat_stop(self, args):
+        job = self._chat_job(args)
+        job.stop()
+        return job.poll(job.poll()["text_len"], job.poll()["reasoning_len"])
 
     def _do_logs(self, args):
         engine = self._current()

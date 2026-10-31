@@ -2,103 +2,213 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>本地大模型</title>
 <style>
-  :root { --bg:#fff; --fg:#1f2328; --muted:#656d76; --line:#d0d7de; --soft:#f6f8fa;
-          --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --accent:#0969da; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8d96a0; --line:#30363d; --soft:#161b22;
-            --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#4493f8; }
-  }
-  * { box-sizing:border-box; }
-  body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
-         font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
-  h2 { font-size:14px; margin:20px 0 8px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .card { border:1px solid var(--line); border-radius:8px; padding:12px; background:var(--soft); }
-  .kv { display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; }
-  .kv b { font-weight:500; color:var(--muted); }
-  .state { font-weight:600; }
-  .state.ready { color:var(--ok); } .state.loading, .state.stopping, .state.downloading { color:var(--warn); }
-  .state.error { color:var(--bad); } .state.idle { color:var(--muted); }
-  code { font:12px ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg);
-         border:1px solid var(--line); border-radius:4px; padding:1px 5px; word-break:break-all; }
-  table { width:100%; border-collapse:collapse; }
-  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { font-weight:500; color:var(--muted); }
-  button { font:inherit; padding:3px 10px; border-radius:6px; border:1px solid var(--line);
-           background:var(--bg); color:var(--fg); cursor:pointer; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.danger { color:var(--bad); }
-  button:disabled { opacity:.45; cursor:default; }
-  input { font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:6px;
-          background:var(--bg); color:var(--fg); }
-  input[type=number] { width:80px; }
-  .muted { color:var(--muted); }
-  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; width:120px; }
-  .bar i { display:block; height:100%; background:var(--accent); }
-  pre { margin:0; max-height:220px; overflow:auto; font:11px/1.45 ui-monospace,Menlo,monospace;
-        white-space:pre-wrap; word-break:break-all; }
-  #msg { min-height:20px; margin-top:8px; }
-  #msg.err { color:var(--bad); }
-  .scroll { overflow-x:auto; }
+/* 模型管理照 Ollama 的习惯：输入框上的模型选择器（没下载的带下载图标，选了就先下载）、
+   搜不到就下载、单独一个「模型」页管已下载的。对话只做最基本的。
+   宿主 CSP 是 default-src 'none'：只能用系统字体。 */
+:root {
+  --bg: #FFFFFF; --soft: #F5F6F8; --ink: #1A1C1F; --muted: #6A7078; --faint: #9AA1A9;
+  --line: #E4E7EB; --fill: #EEF0F3; --accent: #2D5BD0; --warm: #B26B00; --bad: #C2362F;
+  --button: #1A1C1F; --button-ink: #FFFFFF; --other: #A9AFB7;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB",
+          "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16181B; --soft: #1C1F23; --ink: #E6E8EB; --muted: #8C939B; --faint: #646B73;
+          --line: #2B2F35; --fill: #24282D; --accent: #7C9BFF; --warm: #E0A23B; --bad: #F07067;
+          --button: #E6E8EB; --button-ink: #16181B; --other: #4D545C; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.5 var(--sans);
+       -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .4; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+[hidden] { display: none !important; }
+
+.app { display: flex; flex-direction: column; height: 100vh; }
+.top { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.top .status { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.top .grow { flex: 1; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.ready { background: var(--accent); }
+.dot.loading { background: var(--warm); animation: pulse 1.4s ease-in-out infinite; }
+.dot.error { background: var(--bad); }
+@keyframes pulse { 50% { opacity: .35; } }
+.btn { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 5px 12px; }
+.btn:hover:not(:disabled) { background: var(--fill); }
+.btn.primary { background: var(--button); color: var(--button-ink); border-color: var(--button); }
+.btn.primary:hover:not(:disabled) { opacity: .88; }
+.btn.quiet { border-color: transparent; background: transparent; color: var(--muted); }
+.btn.quiet:hover:not(:disabled) { background: var(--fill); color: var(--ink); }
+.btn.danger { color: var(--bad); }
+.btn.armed { border-color: var(--bad); color: var(--bad); }
+.notice { margin: 0; padding: 8px 20px; font-size: 12px; color: var(--bad); border-bottom: 1px solid var(--line); }
+.notice:empty { display: none; }
+
+.body { flex: 1; min-height: 0; overflow-y: auto; }
+.col { max-width: 680px; margin: 0 auto; padding: 24px 24px; }
+
+/* 对话 */
+.chat { display: flex; flex-direction: column; gap: 20px; }
+.user { align-self: flex-end; max-width: 80%; background: var(--fill); padding: 8px 14px;
+        border-radius: 16px; font-size: 15px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.bot { font-size: 15px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.bot.err { color: var(--bad); font-size: 13px; }
+.bot .note { display: block; margin-top: 6px; font-size: 12px; color: var(--faint); }
+.caret::after { content: ""; display: inline-block; width: 7px; height: 15px; margin-left: 2px; vertical-align: -2px;
+                background: var(--ink); animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.hello { padding-top: 16vh; text-align: center; }
+.hello h1 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; margin: 0 0 8px; }
+.hello p { margin: 0 auto; max-width: 30em; color: var(--muted); font-size: 14px; line-height: 1.6; }
+
+/* 下载 / 加载中：像 Ollama 那样直接出现在对话区 */
+.pull { padding-top: 14vh; max-width: 440px; margin: 0 auto; }
+.pull h1 { font-size: 17px; font-weight: 600; margin: 0 0 14px; }
+.bar { height: 6px; border-radius: 3px; background: var(--fill); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--ink); transition: width .5s; }
+.bar.indeterminate i { width: 30%; animation: slide 1.6s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.pull .line { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.pull .hint { margin-top: 18px; font-size: 12px; color: var(--faint); }
+.pull .err { color: var(--bad); font-size: 13px; margin: 0 0 14px; }
+
+/* 输入框 + 模型选择器 */
+.composer-wrap { padding: 8px 24px 18px; }
+.composer { max-width: 680px; margin: 0 auto; border: 1px solid var(--line); border-radius: 18px;
+            padding: 10px 10px 8px 16px; position: relative; background: var(--bg); }
+.composer:focus-within { border-color: var(--muted); }
+.composer textarea { width: 100%; border: 0; outline: 0; resize: none; background: transparent;
+                     font-size: 15px; line-height: 1.6; max-height: 168px; min-height: 26px; padding: 2px 0; }
+.composer-bar { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+.picker-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent;
+              border-radius: 8px; padding: 5px 8px; font-size: 13px; color: var(--muted); }
+.picker-btn:hover { background: var(--fill); color: var(--ink); }
+.picker-btn svg { width: 12px; height: 12px; }
+.send { width: 32px; height: 32px; border-radius: 50%; border: 0; background: var(--button); color: var(--button-ink);
+        display: grid; place-items: center; }
+.send svg { width: 16px; height: 16px; }
+
+.picker { position: absolute; right: 8px; bottom: calc(100% + 8px); width: 360px; max-width: calc(100vw - 32px);
+          background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+          box-shadow: 0 12px 32px rgba(0,0,0,.12); display: flex; flex-direction: column; max-height: 440px; z-index: 5; }
+.picker input { margin: 10px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+.picker-list { overflow-y: auto; padding: 0 6px 6px; }
+.picker-group { padding: 8px 8px 4px; font-size: 12px; color: var(--muted); }
+.opt { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0; background: transparent;
+       padding: 7px 8px; border-radius: 8px; }
+.opt:hover:not(:disabled), .opt.active { background: var(--fill); }
+.opt .name { flex: 1; min-width: 0; }
+.opt .name b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opt .name span { font-size: 12px; color: var(--muted); }
+.opt .size { font-size: 12px; color: var(--muted); }
+.opt svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+.opt.current svg { color: var(--accent); }
+.opt:disabled { opacity: .5; }
+.picker-mem { border-top: 1px solid var(--line); padding: 10px 14px 12px; }
+.picker-foot { border-top: 1px solid var(--line); padding: 6px; }
+.picker-foot .btn { width: 100%; text-align: left; }
+
+/* 统一内存条：选模型就是在分这台机器的内存 */
+.mem-track { position: relative; display: flex; height: 8px; border-radius: 4px; background: var(--fill); overflow: hidden; }
+.mem-track > i { display: block; height: 100%; transition: width .3s ease; }
+.mem-other { background: var(--other); }
+.mem-model { background: var(--accent); }
+.mem-preview { background: repeating-linear-gradient(-45deg, var(--accent) 0 3px, transparent 3px 6px); box-shadow: inset 0 0 0 1px var(--accent); }
+.mem-preview.over { background: repeating-linear-gradient(-45deg, var(--bad) 0 3px, transparent 3px 6px); box-shadow: inset 0 0 0 1px var(--bad); }
+.mem-cap { position: absolute; top: 0; bottom: 0; left: 90%; width: 1px; background: var(--muted); }
+.mem-text { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.mem-text.over { color: var(--bad); }
+
+/* 模型管理页 */
+.manage h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+.manage .sub { color: var(--muted); margin: 0 0 18px; }
+.mtable { width: 100%; border-collapse: collapse; margin-top: 18px; }
+.mtable th { text-align: left; font-weight: 500; font-size: 12px; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.mtable td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.mtable td.num { white-space: nowrap; }
+.mtable .acts { text-align: right; white-space: nowrap; }
+.mtable .model b { font-weight: 500; } .mtable .model span { display: block; font-size: 12px; color: var(--muted); }
+.settings { margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--line); }
+.settings h2 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+.fields { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0; }
+.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.field input { width: 140px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 13px; }
+.engine-note { margin-top: 24px; font-size: 12px; color: var(--faint); }
+
+.drawer { position: absolute; left: 0; right: 0; bottom: 0; height: 46%; background: var(--bg); border-top: 1px solid var(--line);
+          box-shadow: 0 -8px 24px rgba(0,0,0,.06); display: flex; flex-direction: column; z-index: 6; }
+.drawer-head { display: flex; align-items: center; padding: 8px 12px 8px 20px; font-weight: 600; }
+.drawer-head .btn { margin-left: auto; }
+.drawer pre { flex: 1; margin: 0; overflow: auto; padding: 4px 20px 16px; font: 11px/1.55 var(--mono); color: var(--muted);
+              white-space: pre-wrap; word-break: break-all; }
+.main { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+@media (max-width: 600px) { .col, .composer-wrap { padding-left: 14px; padding-right: 14px; } .top { padding: 10px 14px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
-<div class="card">
-  <div class="kv">
-    <b>状态</b><span><span id="state" class="state idle">连接中…</span> <span id="stateNote" class="muted"></span></span>
-    <b>当前模型</b><span id="model">—</span>
-    <b>接口地址</b><span><code id="endpoint">—</code></span>
-    <b>agent-core 配置</b><span><code id="clientCfg">—</code></span>
-    <b>内存</b><span id="memory">—</span>
-    <b>推理引擎</b><span id="engine">—</span>
+<div class="app">
+  <header class="top">
+    <span class="status" id="status"><i class="dot"></i>读取中…</span>
+    <span class="grow"></span>
+    <button class="btn quiet" id="newChat" hidden>新对话</button>
+    <button class="btn quiet" id="logsBtn" aria-expanded="false">日志</button>
+    <button class="btn quiet" id="manageBtn">模型</button>
+  </header>
+  <p class="notice" id="notice" role="alert"></p>
+  <div class="main">
+    <section class="body" id="body"></section>
+    <div class="composer-wrap" id="composerWrap">
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" aria-label="消息" placeholder="发消息…"></textarea>
+        <div class="composer-bar">
+          <button type="button" class="picker-btn" id="pickerBtn" aria-haspopup="listbox" aria-expanded="false">
+            <span id="pickerLabel">选择模型</span>
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"/></svg>
+          </button>
+          <button type="submit" class="send" id="send" aria-label="发送"></button>
+        </div>
+        <div class="picker" id="picker" hidden>
+          <input id="search" placeholder="搜索，或输入 ModelScope 仓库名下载" aria-label="搜索模型" autocomplete="off">
+          <div class="picker-list" id="pickerList" role="listbox"></div>
+          <div class="picker-mem" id="pickerMem"></div>
+          <div class="picker-foot"><button type="button" class="btn quiet" id="pickerManage">管理模型</button></div>
+        </div>
+      </form>
+    </div>
+    <div class="drawer" id="drawer" hidden>
+      <div class="drawer-head">引擎日志 <button class="btn quiet" id="drawerClose">关闭</button></div>
+      <pre id="logText"></pre>
+    </div>
   </div>
-  <div class="row" style="margin-top:10px">
-    <button id="unload" class="danger" disabled>卸载模型</button>
-  </div>
-  <div id="msg"></div>
 </div>
-
-<h2>模型</h2>
-<div class="scroll">
-<table>
-  <thead><tr><th>模型</th><th>大小</th><th>文件</th><th>预算 GB / 上下文</th><th></th></tr></thead>
-  <tbody id="models"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
-</table>
-</div>
-
-<h2>添加模型（ModelScope）</h2>
-<div class="row">
-  <input id="addRepo" placeholder="仓库，如 Qwen/Qwen3-8B-FP8" size="30">
-  <input id="addId" placeholder="id（可空）" size="14">
-  <input id="addTool" placeholder="tool_call_parser" size="14" value="hermes">
-  <input id="addReason" placeholder="reasoning_parser" size="14">
-  <button id="addBtn">添加</button>
-</div>
-<div class="muted" style="margin-top:4px">只登记，不下载：会按当前 revision 钉死每个文件的大小和 SHA256。</div>
-
-<h2>试一句</h2>
-<div class="row">
-  <input id="prompt" size="50" value="用一句话介绍你自己。">
-  <button id="testBtn" disabled>发送</button>
-</div>
-<div id="testOut" class="muted" style="margin-top:6px"></div>
-
-<h2>日志 <button id="logBtn" style="margin-left:8px">刷新</button></h2>
-<div class="card"><pre id="logs" class="muted">（未加载模型）</pre></div>
 
 <script>
 'use strict';
 const PROTOCOL = 'motus.workbench/1';
-let port = null, seq = 0;
-const pending = new Map();
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const gb = x => (x == null || isNaN(x)) ? '?' : (Math.round(x * 10) / 10).toFixed(1);
+const SVG = {
+  send: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg>',
+  stop: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg>',
+  check: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7"/></svg>',
+  down: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></svg>',
+  blank: '<svg viewBox="0 0 16 16" aria-hidden="true"></svg>',
+};
 
-// 宿主一次只放行一个「写」请求（info/stop 之外都算），所以页面自己排队，
-// 不然轮询 models/logs 会和正在跑的 test、load 撞上，报「上一项操作尚未完成」。
-let queue = Promise.resolve();
+// ── 和宿主通信：宿主一次只放行一个写请求，页面自己排队 ─────────────────
+let port = null, seq = 0, queue = Promise.resolve();
+const pending = new Map();
 function request(method, args) {
   const run = () => new Promise((resolve, reject) => {
     const id = 'r' + (++seq);
@@ -112,120 +222,284 @@ function request(method, args) {
 }
 const call = (action, args = {}) => request('call', {action, ...args});
 
-function say(text, isErr = false) {
-  const el = $('msg'); el.textContent = text || ''; el.className = isErr ? 'err' : 'muted';
-}
-async function act(action, args, okText) {
-  try { const r = await call(action, args); if (okText) say(okText); await refreshAll(); return r; }
-  catch (e) { say(`${action} 失败：${e.message}`, true); }
-}
+// ── 状态 ─────────────────────────────────────────────────────────
+const S = {info: null, models: [], view: 'chat', chat: [], job: null, streaming: false,
+           picker: false, preview: null, drawer: false, logs: ''};
+const current = () => S.info?.model || null;
+const modelOf = id => S.models.find(m => m.id === id);
+const titleOf = id => modelOf(id)?.title || id;
+const notice = t => { $('notice').textContent = t || ''; };
 
-const STATE_TEXT = {idle:'未加载', loading:'准备中', ready:'就绪', error:'出错'};
-let info = null;
-
-function renderInfo(i) {
-  info = i;
-  const st = i.state || 'idle';
-  $('state').textContent = STATE_TEXT[st] || st;
-  $('state').className = 'state ' + st;
-  const eng = i.engine || {};
-  // message 和 agent-core 启动弹窗里显示的是同一行字
-  $('stateNote').textContent = (i.message || '') +
-    (st === 'ready' && eng.load_s ? ` · 加载耗时 ${Math.round(eng.load_s)}s` : '');
-  $('model').textContent = i.model || '—';
-  $('engine').textContent = i.engine_version ? `vLLM ${i.engine_version.split('+')[0]}` : '—';
-  const base = i.serving?.base_url || '—';
-  $('endpoint').textContent = base;
-  $('clientCfg').textContent = i.model ? JSON.stringify({url: base, key: 'local', model: i.model}) : '—';
-  const m = i.memory || {};
-  $('memory').textContent = `整机 ${m.total_gb ?? '?'} GB（统一内存，CPU/GPU 共用）` +
-    (eng.budget_gb && st !== 'idle' ? ` · 当前模型预算 ${eng.budget_gb} GB，约占 ${eng.footprint_gb} GB` : '') +
-    ` · 进程开销按 ${m.overhead_gb ?? '?'} GB 估`;
-  $('unload').disabled = st === 'idle';
-  $('testBtn').disabled = st !== 'ready';
+// ── 顶栏 ─────────────────────────────────────────────────────────
+function renderTop() {
+  const i = S.info, st = i.state;
+  const text = !current() ? '还没有选择模型'
+    : st === 'ready' ? `${titleOf(current())} 已就绪`
+    : st === 'error' ? `${titleOf(current())} 出错了`
+    : st === 'loading' ? `正在准备 ${titleOf(current())}` : `${titleOf(current())} 未加载`;
+  $('status').innerHTML = `<i class="dot ${st}"></i>${esc(text)}`;
+  $('newChat').hidden = S.view !== 'chat' || !S.chat.length;
+  $('manageBtn').textContent = S.view === 'manage' ? '返回对话' : '模型';
 }
 
-function renderModels(r) {
-  const rows = (r.models || []).map(m => {
-    const dl = m.download;
-    let files;
-    if (m.installed) files = '<span class="state ready">已下载</span>';
-    else if (dl && dl.state === 'downloading')
-      files = `<div class="bar"><i style="width:${dl.pct || 0}%"></i></div><span class="muted">${dl.pct || 0}% · ${dl.mb_done || 0}/${dl.mb_total || 0} MB</span>`;
-    else if (dl && dl.state === 'error') files = `<span class="state error" title="${esc(dl.error)}">下载失败</span>`;
-    else files = '<span class="muted">未下载</span>';
-    const s = m.serve || {};
-    const mem = s.memory_gb || info?.memory?.default_budget_gb || 16;
-    const params = `<input type="number" step="1" min="1" value="${esc(mem)}" data-mem="${esc(m.id)}">` +
-      ` <input type="number" step="1024" min="512" value="${esc(s.max_model_len || '')}" placeholder="ctx" data-ctx="${esc(m.id)}">` +
-      `<br><span class="muted">约占 ${esc(m.footprint_gb)} GB</span>`;
-    const busyDl = dl && dl.state === 'downloading';
-    const btns = [];
-    if (m.unsupported) btns.push(`<span class="state error" title="${esc(m.unsupported)}">本机不支持</span>`);
-    else if (m.loaded) btns.push('<span class="state ready">使用中</span>');
-    else if (m.installed) btns.push(`<button class="primary" data-load="${esc(m.id)}">加载</button>`,
-                                    `<button class="danger" data-del="${esc(m.id)}">删文件</button>`);
-    else btns.push(`<button class="primary" data-load="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>下载并加载</button>`,
-                   `<button data-dl="${esc(m.id)}" ${busyDl ? 'disabled' : ''}>只下载</button>`);
-    if (!m.builtin && !m.loaded) btns.push(`<button class="danger" data-rm="${esc(m.id)}">移除</button>`);
-    return `<tr><td><b>${esc(m.title)}</b><br><span class="muted">${esc(m.id)} · ${esc(m.repo)}</span>` +
-      (m.note ? `<br><span class="muted">${esc(m.note)}</span>` : '') +
-      (m.unsupported ? `<br><span class="state error">${esc(m.unsupported)}</span>` : '') + `</td>` +
-      `<td>${esc(m.size_gb)} GB</td><td>${files}</td><td>${params}</td><td><div class="row">${btns.join('')}</div></td></tr>`;
-  });
-  $('models').innerHTML = rows.join('') || '<tr><td colspan="5" class="muted">注册表为空</td></tr>';
+// ── 对话区 ───────────────────────────────────────────────────────
+function renderBody() {
+  if (S.view === 'manage') { $('body').innerHTML = viewManage(); return; }
+  const st = S.info.state;
+  if (current() && (st === 'loading' || st === 'error')) { $('body').innerHTML = viewPull(); return; }
+  if (!current() || st !== 'ready') {
+    $('body').innerHTML = `<div class="col hello"><h1>在这台机器上跑一个大模型</h1>
+      <p>点输入框右下角选一个模型。没下载过的会先下载，之后都在本机运行，不经过云端。</p></div>`;
+    return;
+  }
+  if (!S.chat.length) {
+    $('body').innerHTML = `<div class="col hello"><h1>${esc(titleOf(current()))}</h1>
+      <p>在这里试试它的回答。agent-core 用的也是这个模型、同一个接口。</p></div>`;
+    return;
+  }
+  $('body').innerHTML = `<div class="col chat">${S.chat.map((t, n) => t.role === 'user'
+    ? `<div class="user">${esc(t.content)}</div>`
+    : `<div class="bot${t.error ? ' err' : ''}" id="bot${n}">${botHTML(t, S.streaming && n === S.chat.length - 1)}</div>`
+  ).join('')}</div>`;
+  $('body').scrollTop = $('body').scrollHeight;
+}
+function botHTML(t, live) {
+  if (t.error) return esc(t.error);
+  const text = t.text || (live && t.reasoning ? '正在思考…' : '');
+  return `<span class="${live ? 'caret' : ''}">${esc(text)}</span>${t.stopped ? '<span class="note">已停止</span>' : ''}`;
+}
+function viewPull() {
+  const i = S.info, name = titleOf(current());
+  if (i.state === 'error') {
+    return `<div class="col pull"><h1>${esc(name)}</h1><p class="err">${esc(i.message)}</p>
+      <button class="btn primary" data-act="retry">重试</button>
+      <div class="hint">看日志可以知道具体原因。</div></div>`;
+  }
+  const dl = i.download && i.download.model === current() && i.download.state === 'downloading' ? i.download : null;
+  if (dl) {
+    return `<div class="col pull"><h1>正在下载 ${esc(name)}</h1>
+      <div class="bar"><i style="width:${dl.pct || 0}%"></i></div>
+      <div class="line"><span>${dl.pct || 0}%</span><span>${dl.mb_done || 0} / ${dl.mb_total || 0} MB</span></div>
+      <div class="hint">下完会自动加载。关掉这个窗口不影响下载。</div></div>`;
+  }
+  const secs = Math.round(i.engine?.load_s || 0);
+  return `<div class="col pull"><h1>正在加载 ${esc(name)}</h1>
+    <div class="bar indeterminate"><i></i></div>
+    <div class="line"><span>已用 ${secs} 秒</span><span>第一次加载要编译，之后会快很多</span></div></div>`;
 }
 
-$('models').addEventListener('click', async ev => {
-  const b = ev.target.closest('button'); if (!b) return;
-  const id = b.dataset.load || b.dataset.dl || b.dataset.del || b.dataset.rm;
-  if (b.dataset.load) {
-    const mem = Number(document.querySelector(`[data-mem="${CSS.escape(id)}"]`).value);
-    const ctx = Number(document.querySelector(`[data-ctx="${CSS.escape(id)}"]`).value) || undefined;
-    const r = await act('load', {model: id, memory_gb: mem, max_model_len: ctx});
-    if (r) say(r.download_first ? `先下载 ${id}，下完自动加载（约占 ${r.footprint_gb} GB）`
-                                : `开始加载 ${id}（会先停掉当前模型，约占 ${r.footprint_gb} GB）`);
-  } else if (b.dataset.dl) await act('download', {model: id}, `开始下载 ${id}`);
-  else if (b.dataset.del) { if (confirmTwice(b)) await act('delete_files', {model: id}, `已删除 ${id} 的文件`); }
-  else if (b.dataset.rm) { if (confirmTwice(b)) await act('remove_model', {model: id}, `已移除 ${id}`); }
+// ── 模型选择器（Ollama 式） ─────────────────────────────────────────
+function openPicker(open) {
+  S.picker = open; $('picker').hidden = !open; $('pickerBtn').setAttribute('aria-expanded', open);
+  if (open) { $('search').value = ''; renderPicker(); $('search').focus(); } else { S.preview = null; }
+}
+function renderPicker() {
+  const q = $('search').value.trim().toLowerCase();
+  const hit = m => !q || m.title.toLowerCase().includes(q) || m.id.includes(q) || m.repo.toLowerCase().includes(q);
+  const local = S.models.filter(m => (m.installed || m.id === current()) && hit(m));
+  const remote = S.models.filter(m => !m.installed && m.id !== current() && hit(m));
+  const opt = m => {
+    const cur = m.id === current();
+    const dl = m.download && m.download.state === 'downloading';
+    const icon = cur ? SVG.check : m.installed ? SVG.blank : SVG.down;
+    const sub = m.unsupported ? '本机不支持' : dl ? `下载中 ${m.download.pct || 0}%` : `约占 ${gb(m.footprint_gb)} GB 内存`;
+    return `<button type="button" class="opt${cur ? ' current' : ''}" role="option" aria-selected="${cur}"
+      data-id="${esc(m.id)}" ${m.unsupported ? `disabled title="${esc(m.unsupported)}"` : ''}>
+      <span class="name"><b>${esc(m.title)}</b><span>${esc(sub)}</span></span>
+      <span class="size">${gb(m.size_gb)} GB</span>${icon}</button>`;
+  };
+  let html = '';
+  if (local.length) html += `<div class="picker-group">本机</div>${local.map(opt).join('')}`;
+  if (remote.length) html += `<div class="picker-group">可下载</div>${remote.map(opt).join('')}`;
+  if (/^[\w.-]+\/[\w.-]+$/.test($('search').value.trim()) && !S.models.some(m => m.repo.toLowerCase() === q)) {
+    html += `<div class="picker-group">ModelScope</div><button type="button" class="opt" data-pull="${esc($('search').value.trim())}">
+      <span class="name"><b>下载 ${esc($('search').value.trim())}</b><span>登记到列表，然后下载并加载</span></span>${SVG.down}</button>`;
+  }
+  $('pickerList').innerHTML = html || `<div class="picker-group">没有匹配的模型。输入「组织/模型名」可以从 ModelScope 下载。</div>`;
+  renderPickerMem();
+}
+function renderPickerMem() {
+  $('pickerMem').innerHTML = memHTML(S.preview && S.preview !== current() ? modelOf(S.preview) : null);
+}
+function memHTML(candidate) {
+  const i = S.info, total = i.memory.total_gb || 0, avail = i.memory.available_gb || 0;
+  const used = Math.max(0, total - avail);
+  const live = current() && i.state !== 'idle';
+  const share = live ? Math.min(i.engine?.footprint_gb || 0, used) : 0;
+  const other = used - share;
+  const w = x => `${Math.max(0, x / total * 100)}%`;
+  if (candidate) {
+    const after = other + candidate.footprint_gb, over = after > 0.9 * total;
+    return `<div class="mem-track"><i class="mem-other" style="width:${w(other)}"></i>
+      <i class="mem-preview${over ? ' over' : ''}" style="width:${w(candidate.footprint_gb)}"></i><span class="mem-cap"></span></div>
+      <div class="mem-text${over ? ' over' : ''}">${over ? `${esc(candidate.title)} 约占 ${gb(candidate.footprint_gb)} GB，超过整机 90%，装不下`
+        : `换成 ${esc(candidate.title)} 后约剩 ${gb(total - after)} GB（共 ${gb(total)} GB）`}</div>`;
+  }
+  return `<div class="mem-track"><i class="mem-other" style="width:${w(other)}"></i>
+    <i class="mem-model" style="width:${w(share)}"></i><span class="mem-cap"></span></div>
+    <div class="mem-text">${live ? `${esc(titleOf(current()))} 约占 ${gb(share)} GB，` : ''}可用 ${gb(avail)} GB（共 ${gb(total)} GB）</div>`;
+}
+$('pickerBtn').onclick = () => openPicker(!S.picker);
+$('search').addEventListener('input', renderPicker);
+$('search').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.stopPropagation(); openPicker(false); $('pickerBtn').focus(); }
+  if (e.key === 'Enter') { e.preventDefault(); $('pickerList').querySelector('.opt:not(:disabled)')?.click(); }
+});
+$('pickerList').addEventListener('mouseover', e => {
+  const id = e.target.closest('.opt')?.dataset.id || null;
+  if (id !== S.preview) { S.preview = id; renderPickerMem(); }
+});
+$('pickerList').addEventListener('click', async e => {
+  const o = e.target.closest('.opt'); if (!o || o.disabled) return;
+  openPicker(false); notice('');
+  try {
+    let id = o.dataset.id;
+    if (o.dataset.pull) id = (await call('add_model', {repo: o.dataset.pull})).added.id;
+    if (id === current() && S.info.state !== 'idle') return;
+    await call('load', {model: id});
+    S.chat = []; S.view = 'chat';
+    await refresh(true);
+  } catch (err) { notice(err.message); }
+});
+document.addEventListener('click', e => { if (S.picker && !e.target.closest('#picker, #pickerBtn')) openPicker(false); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.picker) openPicker(false); });
+$('pickerManage').onclick = () => { openPicker(false); S.view = 'manage'; render(); };
+
+// ── 模型管理页（Ollama 的「模型」设置 / ollama list、rm） ──────────────
+function viewManage() {
+  const rows = S.models.filter(m => m.installed || m.id === current() || m.download?.state === 'downloading');
+  const cur = modelOf(current());
+  const tr = m => {
+    const isCur = m.id === current(), dl = m.download?.state === 'downloading';
+    const state = isCur ? ({ready: '使用中', loading: '准备中', error: '出错', idle: '未加载'})[S.info.state] : dl ? `下载中 ${m.download.pct}%` : '';
+    return `<tr><td class="model"><b>${esc(m.title)}</b><span>${esc(m.repo)}</span></td>
+      <td class="num">${gb(m.size_gb)} GB</td><td class="num">约 ${gb(m.footprint_gb)} GB</td><td>${esc(state)}</td>
+      <td class="acts">${!isCur && !dl ? `<button class="btn" data-act="use" data-id="${esc(m.id)}">使用</button>
+        <button class="btn quiet danger" data-act="delete_files" data-id="${esc(m.id)}">删除</button>` : ''}
+        ${isCur && S.info.state !== 'idle' ? `<button class="btn quiet" data-act="unload">卸载</button>` : ''}</td></tr>`;
+  };
+  const s = cur?.serve || {}, eng = S.info.engine || {}, saved = S.info.selected || {};
+  return `<div class="col manage"><h1>模型</h1>
+    <p class="sub">已下载到这台机器的模型。下载新模型在输入框的模型选择器里。</p>
+    ${memHTML(null)}
+    ${rows.length ? `<table class="mtable"><thead><tr><th>模型</th><th>大小</th><th>运行时内存</th><th>状态</th><th></th></tr></thead>
+      <tbody>${rows.map(tr).join('')}</tbody></table>` : `<p class="sub" style="margin-top:18px">还没有下载任何模型。</p>`}
+    ${cur ? `<div class="settings"><h2>${esc(cur.title)} 的设置</h2>
+      <p class="sub">改了之后重新加载生效。内存预算之外，vLLM 进程本身还要约 ${gb(S.info.memory.overhead_gb)} GB。</p>
+      <div class="fields">
+        <label class="field">内存预算（GB）<input id="fMem" type="number" min="1" step="1" value="${esc(eng.budget_gb || saved.memory_gb || s.memory_gb || 16)}"></label>
+        <label class="field">上下文长度<input id="fCtx" type="number" min="512" step="1024" value="${esc(saved.max_model_len || s.max_model_len || '')}"></label>
+      </div><button class="btn" data-act="reload">重新加载</button></div>` : ''}
+    <p class="engine-note">推理引擎 vLLM ${esc((S.info.engine_version || '?').split('+')[0])}</p></div>`;
+}
+const armed = new WeakSet();
+$('body').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-act]'); if (!b) return;
+  const act = b.dataset.act, id = b.dataset.id;
+  if ((act === 'delete_files' || act === 'unload') && !armed.has(b)) {     // iframe 里没有 confirm()
+    armed.add(b); b.classList.add('armed'); const t = b.textContent; b.textContent = '再点一次确认';
+    return setTimeout(() => { armed.delete(b); b.classList.remove('armed'); b.textContent = t; }, 3000);
+  }
+  b.disabled = true; notice('');
+  try {
+    if (act === 'use') { await call('load', {model: id}); S.chat = []; S.view = 'chat'; }
+    else if (act === 'retry') await call('load', {model: current()});
+    else if (act === 'reload') {
+      await call('load', {model: current(), memory_gb: Number($('fMem').value) || undefined,
+                          max_model_len: Number($('fCtx').value) || undefined});
+      S.chat = []; S.view = 'chat';
+    }
+    else if (act === 'unload') { await call('unload'); S.chat = []; }
+    else await call(act, {model: id});
+    await refresh(true);
+  } catch (err) { notice(err.message); b.disabled = false; }
+});
+$('manageBtn').onclick = () => { S.view = S.view === 'manage' ? 'chat' : 'manage'; render(); };
+
+// ── 发消息 ───────────────────────────────────────────────────────
+function updateComposer() {
+  const ready = current() && S.info.state === 'ready';
+  $('composerWrap').hidden = S.view === 'manage';
+  $('pickerLabel').textContent = current() ? titleOf(current()) : '选择模型';
+  $('input').disabled = !ready;
+  $('input').placeholder = ready ? `给 ${titleOf(current())} 发消息…` : '先选择一个模型';
+  $('send').innerHTML = S.streaming ? SVG.stop : SVG.send;
+  $('send').setAttribute('aria-label', S.streaming ? '停止生成' : '发送');
+  $('send').disabled = !S.streaming && (!ready || !$('input').value.trim());
+}
+function autosize() { const t = $('input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 168) + 'px'; updateComposer(); }
+$('input').addEventListener('input', autosize);
+$('input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); }
+});
+$('newChat').onclick = () => { if (!S.streaming) { S.chat = []; render(); $('input').focus(); } };
+$('composer').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (S.streaming) { try { await call('chat_stop', {job: S.job}); } catch (err) {} return; }
+  const text = $('input').value.trim(); if (!text) return;
+  $('input').value = ''; autosize(); notice('');
+  S.chat.push({role: 'user', content: text});
+  const turn = {role: 'assistant', text: '', reasoning: ''};
+  S.chat.push(turn);
+  const history = S.chat.filter(t => t.role === 'user' || (t.text && !t.error))
+    .map(t => ({role: t.role, content: t.role === 'user' ? t.content : t.text}));
+  S.streaming = true; render();
+  try {
+    S.job = (await call('chat_start', {messages: history})).job;
+    let tf = 0, rf = 0;
+    for (;;) {
+      const p = await call('chat_poll', {job: S.job, text_from: tf, reasoning_from: rf});
+      turn.text += p.text; turn.reasoning += p.reasoning; tf = p.text_len; rf = p.reasoning_len;
+      if (p.state !== 'running') { if (p.state === 'error') turn.error = p.error; if (p.state === 'stopped') turn.stopped = true; break; }
+      const el = $('bot' + (S.chat.length - 1));
+      if (el) { el.innerHTML = botHTML(turn, true); $('body').scrollTop = $('body').scrollHeight; }
+      await new Promise(r => setTimeout(r, 250));
+    }
+  } catch (err) { turn.error = err.message; }
+  S.streaming = false; render(); $('input').focus();
 });
 
-// 宿主的 iframe 没有 confirm()；用「再点一次确认」代替
-function confirmTwice(btn) {
-  if (btn.dataset.armed) return true;
-  btn.dataset.armed = '1'; const t = btn.textContent; btn.textContent = '再点确认';
-  setTimeout(() => { delete btn.dataset.armed; btn.textContent = t; }, 3000);
-  return false;
+// ── 日志 ─────────────────────────────────────────────────────────
+function setDrawer(open) {
+  S.drawer = open; $('drawer').hidden = !open; $('logsBtn').setAttribute('aria-expanded', open);
+  if (open) refreshLogs();
 }
-
-$('unload').onclick = ev => { if (confirmTwice(ev.target)) act('unload', {}, '正在卸载'); };
-$('addBtn').onclick = async () => {
-  const repo = $('addRepo').value.trim(); if (!repo) return say('先填仓库名', true);
-  say('正在查询 ModelScope…');
-  const r = await act('add_model', {repo, model: $('addId').value.trim() || undefined,
-    tool_call_parser: $('addTool').value.trim() || undefined,
-    reasoning_parser: $('addReason').value.trim() || undefined});
-  if (r?.added) say(`已添加 ${r.added.id}（${r.added.size_gb} GB，${r.added.files} 个文件）`);
-};
-$('testBtn').onclick = async () => {
-  $('testOut').textContent = '等待回复…';
-  try {
-    const r = await call('test', {prompt: $('prompt').value});
-    $('testOut').innerHTML = `<div>${esc(r.reply)}</div><div class="muted">首 token ${r.ttft_ms} ms` +
-      (r.chunks_per_s ? ` · 约 ${r.chunks_per_s} chunk/s` : '') + `</div>`;
-  } catch (e) { $('testOut').textContent = '失败：' + e.message; }
-};
-$('logBtn').onclick = () => refreshLogs();
-
+$('logsBtn').onclick = () => setDrawer(!S.drawer);
+$('drawerClose').onclick = () => setDrawer(false);
 async function refreshLogs() {
-  try { const r = await call('logs', {lines: 200}); $('logs').textContent = (r.lines || []).join('\n') || '（无日志）';
-        $('logs').scrollTop = $('logs').scrollHeight; } catch (e) { /* 轮询失败不打扰 */ }
-}
-async function refreshAll() {
-  try { renderInfo(await call('info')); } catch (e) { say('读不到状态：' + e.message, true); return; }
-  try { renderModels(await call('models')); } catch (e) { say('读不到模型列表：' + e.message, true); }
+  try {
+    const lines = (await call('logs', {lines: 300})).lines || [];
+    $('logText').textContent = lines.join('\n') || '（还没有输出）';
+    $('logText').scrollTop = 1e9;
+  } catch (e) {}
 }
 
+// ── 刷新 ─────────────────────────────────────────────────────────
+function render() {
+  renderTop();
+  if (!(S.view === 'manage' && document.activeElement?.closest('.settings'))) renderBody();
+  updateComposer();
+  if (S.picker) renderPicker();
+}
+async function refresh(withModels) {
+  S.info = await call('info');
+  if (withModels || !S.models.length) S.models = (await call('models')).models || [];
+  // 对话进行中只更新顶栏，别重画消息
+  if (S.streaming) { renderTop(); return; }
+  render();
+}
+let tick = 0;
+async function poll() {
+  tick++;
+  if (!S.streaming) {
+    try {
+      const busy = S.info?.state === 'loading' || S.models.some(m => m.download?.state === 'downloading');
+      await refresh(busy || tick % 5 === 0);
+      if (S.drawer) await refreshLogs();
+    } catch (e) { notice('读不到卡片状态：' + e.message); }
+  }
+  setTimeout(poll, 2000);
+}
 window.addEventListener('message', async event => {
   if (port || event.source !== parent || event.data?.protocol !== PROTOCOL || !event.ports[0]) return;
   port = event.ports[0];
@@ -233,20 +507,9 @@ window.addEventListener('message', async event => {
     const {id, result, error} = ev.data || {};
     const p = pending.get(id); if (!p) return;
     pending.delete(id); clearTimeout(p.timer);
-    error ? p.reject(new Error(typeof error === 'string' ? error : (error.message || JSON.stringify(error))))
-          : p.resolve(result);
+    error ? p.reject(new Error(typeof error === 'string' ? error : (error.message || JSON.stringify(error)))) : p.resolve(result);
   };
-  await refreshAll(); await refreshLogs();
-  let tick = 0;
-  const poll = async () => {
-    tick++;
-    try { renderInfo(await call('info')); } catch (e) {}
-    const st = info?.state;
-    const downloading = !!info?.download && info.download.state === 'downloading';
-    if (downloading || tick % 5 === 0) { try { renderModels(await call('models')); } catch (e) {} }
-    if (st === 'loading' || st === 'error' || tick % 5 === 0) await refreshLogs();
-    setTimeout(poll, 2000);
-  };
+  try { await refresh(true); } catch (e) { notice('读不到卡片状态：' + e.message); }
   setTimeout(poll, 2000);
 });
 </script>
