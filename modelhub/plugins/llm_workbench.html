@@ -142,8 +142,11 @@ button:disabled { cursor: default; opacity: .4; }
 .boot-steps .t { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
 @keyframes boot-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .boot-steps li.active::before { animation: none; } }
-.boot-log { font: 11px/1.55 var(--mono); background: var(--rail); border: 1px solid var(--line); border-radius: 8px;
-  padding: 8px 10px; margin: 0; max-height: 9.5em; overflow: hidden; white-space: pre-wrap; word-break: break-all; color: var(--muted); }
+.boot-log { font: 11px/1.6 var(--mono); background: var(--rail); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; margin: 0; color: var(--muted); }
+/* 一行一条、超长截断：换行会把最新的那行挤出框外，而要看的正是最新那行 */
+.boot-log div { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.boot-log div:last-child { color: var(--ink); }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
 /* 表单：一套间距（4/8/12/16/24），控件同高 34px，字段顶对齐 —— 一行里某个字段的说明
    折行时，别的字段不再被 grid 拉高 */
@@ -493,7 +496,7 @@ function bootHTML(b) {
   const took = b.elapsed_s != null ? `已用 ${Math.round(b.elapsed_s)} 秒。` : '';
   return `<div class="boot"><ol class="boot-steps" aria-label="启动进度">${steps}</ol>
     ${took || quiet ? `<p class="sub">${took}${quiet}</p>` : ''}
-    ${b.recent && b.recent.length ? `<pre class="boot-log" aria-label="最近的引擎日志">${esc(b.recent.join('\n'))}</pre>` : ''}</div>`;
+    ${b.recent && b.recent.length ? `<div class="boot-log" aria-label="最近的引擎日志">${b.recent.slice(-5).map(l => `<div title="${esc(l)}">${esc(l)}</div>`).join('')}</div>` : ''}</div>`;
 }
 function renderService(full) {
   const i = S.info; if (!i) return;
@@ -506,7 +509,7 @@ function renderService(full) {
       <dt>接口地址</dt><dd>${esc(i.serving?.base_url || '—')}</dd>
       <dt>模型名</dt><dd>${esc(current() || '—')}</dd>
       <dt>运行时长</dt><dd>${st === 'ready' && eng.uptime_s ? fmtEta(Math.round(eng.uptime_s)) : '—'}</dd>
-      <dt>上次加载用时</dt><dd>${eng.load_s ? `${Math.round(eng.load_s)} 秒` : '—'}</dd>
+      <dt>上次加载用时</dt><dd>${eng.load_s && st !== 'loading' ? `${Math.round(eng.load_s)} 秒` : '—'}</dd>
       <dt>KV cache 容量</dt><dd>${eng.kv_tokens && st !== 'idle' ? `${eng.kv_tokens.toLocaleString('en-US')} token（引擎报告）${kvSessionsText(eng.kv_tokens)}` : '—'}</dd>
       <dt>推理引擎</dt><dd>vLLM ${esc((i.engine_version || '?').split('+')[0])}</dd>
     </dl>
