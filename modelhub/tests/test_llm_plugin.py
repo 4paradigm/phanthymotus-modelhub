@@ -479,3 +479,37 @@ def test_while_the_old_model_stops_the_card_says_loading_not_stopped(make, tmp_p
     assert info["state"] == "loading" and "正在停止上一个模型" in info["message"]
     release.set()
     assert _wait(lambda: plugin.dispatch("llm", {"action": "info"})["state"] == "ready")
+
+
+def test_loading_reports_its_steps_and_recent_log(make, tmp_path):
+    """加载一两分钟里有几十秒没日志：只说「准备中」时人分不清是在干活还是卡住了。"""
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    eng = _FakeEngine.instances[0]
+    eng.state = "loading"
+    eng.status = lambda: {"model": eng.model_id, "state": "loading", "error": "", "budget_gb": 6,
+                          "load_s": 62, "phase": "kv", "phase_detail": "", "phase_s": 41}
+    eng.logs = lambda n: ["INFO Loading weights took 5.88 seconds", "INFO torch.compile takes 6.21 s in total"]
+    info = plugin.dispatch("llm", {"action": "info"})
+    assert info["state"] == "loading" and "分配 KV cache" in info["message"]
+    boot = info["startup"]
+    states = {s["label"]: s["state"] for s in boot["steps"]}
+    assert states["加载权重"] == "done" and states["分配 KV cache"] == "active"
+    assert states["捕获 CUDA graph"] == "todo"
+    assert boot["elapsed_s"] == 62 and boot["phase_s"] == 41 and len(boot["recent"]) == 2
+    eng.state = "ready"
+    eng.status = lambda: {"model": eng.model_id, "state": "ready", "error": "", "budget_gb": 6, "load_s": 99}
+    assert plugin.dispatch("llm", {"action": "info"})["startup"] is None
+
+
+def test_downloading_is_the_first_step(make):
+    plugin, _ = make()
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    dl = plugin.fake_downloads
+    assert _wait(lambda: dl.started == ["qwen3-0.6b"])
+    dl.progress("qwen3-0.6b", 40)
+    boot = plugin.dispatch("llm", {"action": "info"})["startup"]
+    assert boot["steps"][0]["label"] == "下载模型" and boot["steps"][0]["state"] == "active"
+    assert "40%" in boot["steps"][0]["detail"]

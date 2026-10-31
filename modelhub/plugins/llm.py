@@ -45,7 +45,8 @@ from serving.vllm_info import ParserChoices
 from serving.registry import (MODEL_ID_RE, Registry, installed_vllm_version, is_installed,
                               model_dir, pin_from_modelscope, unsupported_reason)
 from serving.vllm_engine import (DEFAULT_HOST_OVERHEAD_GB, ERROR, IDLE, LOADING, NON_KV_MARGIN_GB,
-                                 READY, STOPPING, VLLMEngine, footprint_gb, kv_bytes_per_token,
+                                 READY, STARTUP_PHASES, STOPPING, VLLMEngine, footprint_gb,
+                                 kv_bytes_per_token,
                                  total_memory_gb)
 
 log = logging.getLogger(__name__)
@@ -222,6 +223,8 @@ class LLMPlugin:
         return {
             # state 用 agent-core 的启动约定：loading 时它会一直轮询，并显示 message
             "state": state, "message": message, "model": model,
+            # 加载中才有：阶段清单、已用时间、最近几行日志 —— 运维页把它放在服务页最上面
+            "startup": self._startup() if state == "loading" else None,
             "error": message if state == "error" else "",
             "busy": False,     # 下载/加载都在后台继续，关掉运维页不影响它们
             "serving": self._serving(saved),
@@ -758,7 +761,9 @@ class LLMPlugin:
         if switching and st["state"] not in (LOADING, READY, ERROR):
             return "loading", f"正在停止上一个模型，然后加载 '{title}' …", engine.model_id
         if st["state"] == LOADING:
-            return ("loading", f"正在加载模型 '{title}'（已 {st.get('load_s', 0):.0f}s）…",
+            label = dict((k, l) for k, l, _ in STARTUP_PHASES).get(st.get("phase", ""), "")
+            step = f"：{label}" if label else ""
+            return ("loading", f"正在加载模型 '{title}'{step}（已 {st.get('load_s', 0):.0f}s）…",
                     engine.model_id)
         if st["state"] == STOPPING:
             return "loading", "正在停止上一个模型 …", engine.model_id
@@ -767,6 +772,36 @@ class LLMPlugin:
         if st["state"] == READY:
             return "ready", f"'{title}' 就绪", engine.model_id
         return "idle", "未加载模型", engine.model_id
+
+    def _startup(self) -> dict | None:
+        """启动进度：先下载 / 先停旧模型这两个前置步骤，加上 vLLM 自己的几个阶段。"""
+        with self._lock:
+            pending = dict(self._pending) if self._pending else None
+            engine, switching = self._engine, self._switching
+        todo = [{"label": label, "state": "todo"} for _, label, _ in STARTUP_PHASES]
+        if pending:
+            _, message, _ = self._card_state()
+            return {"steps": [{"label": "下载模型", "state": "active", "detail": message}] + todo,
+                    "elapsed_s": None, "phase_s": None, "recent": []}
+        if engine is None:
+            return None
+        st = engine.status()
+        if st["state"] != LOADING:
+            if not switching:
+                return None
+            return {"steps": [{"label": "停止上一个模型", "state": "active"}] + todo,
+                    "elapsed_s": None, "phase_s": None, "recent": []}
+        keys = [k for k, _, _ in STARTUP_PHASES]
+        current = keys.index(st.get("phase", "start")) if st.get("phase") in keys else 0
+        steps = []
+        for i, (_, label, _) in enumerate(STARTUP_PHASES):
+            step = {"label": label, "state": "done" if i < current else
+                    "active" if i == current else "todo"}
+            if i == current and st.get("phase_detail"):
+                step["detail"] = st["phase_detail"]
+            steps.append(step)
+        return {"steps": steps, "elapsed_s": st.get("load_s"), "phase_s": st.get("phase_s"),
+                "recent": engine.logs(6)}
 
     def _title(self, model_id: str) -> str:
         try:
