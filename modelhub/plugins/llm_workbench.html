@@ -365,7 +365,7 @@ function localList(M) {
       const isCur = m.id === running, st = isCur ? S.info.state : 'idle';
       const action = m.unsupported ? `<span class="tag bad" title="${esc(m.unsupported)}">本机不支持</span>`
         : isCur ? `<button class="btn sm danger" data-stop="1" data-confirm="stop">停止</button>`
-        : running ? `<button class="btn sm" data-load="${esc(m.id)}" data-confirm="switch-${esc(m.id)}" data-confirm-label="再点一次：停止 ${esc(titleOf(running))} 并切换">切换到这个</button>`
+        : running ? `<button class="btn sm" data-load="${esc(m.id)}" data-confirm="switch-${esc(m.id)}" data-confirm-label="再点一次切换">切换到这个</button>`
         : `<button class="btn sm primary" data-load="${esc(m.id)}">启动</button>`;
       return `<tr><td class="name"><b>${esc(m.title)}</b><span>${esc(m.repo)}</span></td>
         <td class="r">${gb(m.disk_gb, 2)} GB</td><td class="r">约 ${gb(m.footprint_gb)} GB</td>
