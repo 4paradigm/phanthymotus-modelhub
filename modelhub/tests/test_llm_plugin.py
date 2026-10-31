@@ -144,6 +144,9 @@ def test_workbench_page_fits_the_host_limit(make):
     assert len(page["html"]) <= 250_000                  # workbench.js 的上限
     assert "motus.workbench/1" in page["html"]
     assert "http://" not in page["html"] and "https://" not in page["html"]  # 宿主 CSP 禁外链
+    # 宿主 iframe 只有 sandbox="allow-scripts"：表单提交被拦，连 submit 事件都没有。
+    # 第一版对话就是这么发不出消息的。
+    assert "<form" not in page["html"] and "requestSubmit" not in page["html"]
 
 
 def test_project_start_and_stop_do_not_touch_the_model(make, tmp_path):

@@ -67,7 +67,7 @@ button:disabled { cursor: default; opacity: .4; }
 @keyframes blink { 50% { opacity: 0; } }
 .hello { padding-top: 16vh; text-align: center; }
 .hello h1 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; margin: 0 0 8px; }
-.hello p { margin: 0 auto; max-width: 30em; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.hello p { margin: 0 auto; max-width: 30em; color: var(--muted); font-size: 14px; line-height: 1.6; text-wrap: balance; }
 
 /* 下载 / 加载中：像 Ollama 那样直接出现在对话区 */
 .pull { padding-top: 14vh; max-width: 440px; margin: 0 auto; }
@@ -168,14 +168,15 @@ button:disabled { cursor: default; opacity: .4; }
   <div class="main">
     <section class="body" id="body"></section>
     <div class="composer-wrap" id="composerWrap">
-      <form class="composer" id="composer">
+      <!-- 不能用表单元素：宿主的 iframe 沙箱只有 allow-scripts，表单提交连 submit 事件都不会触发 -->
+      <div class="composer" id="composer">
         <textarea id="input" rows="1" aria-label="消息" placeholder="发消息…"></textarea>
         <div class="composer-bar">
           <button type="button" class="picker-btn" id="pickerBtn" aria-haspopup="listbox" aria-expanded="false">
             <span id="pickerLabel">选择模型</span>
             <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5 6 7.5l3-3"/></svg>
           </button>
-          <button type="submit" class="send" id="send" aria-label="发送"></button>
+          <button type="button" class="send" id="send" aria-label="发送"></button>
         </div>
         <div class="picker" id="picker" hidden>
           <input id="search" placeholder="搜索，或输入 ModelScope 仓库名下载" aria-label="搜索模型" autocomplete="off">
@@ -183,7 +184,7 @@ button:disabled { cursor: default; opacity: .4; }
           <div class="picker-mem" id="pickerMem"></div>
           <div class="picker-foot"><button type="button" class="btn quiet" id="pickerManage">管理模型</button></div>
         </div>
-      </form>
+      </div>
     </div>
     <div class="drawer" id="drawer" hidden>
       <div class="drawer-head">引擎日志 <button class="btn quiet" id="drawerClose">关闭</button></div>
@@ -340,7 +341,7 @@ function memHTML(candidate) {
     <div class="mem-text">${live ? `${esc(titleOf(current()))} 约占 ${gb(share)} GB，` : ''}可用 ${gb(avail)} GB（共 ${gb(total)} GB）</div>`;
 }
 $('pickerBtn').onclick = () => openPicker(!S.picker);
-$('search').addEventListener('input', renderPicker);
+$('search').addEventListener('input', () => { S.preview = null; renderPicker(); });
 $('search').addEventListener('keydown', e => {
   if (e.key === 'Escape') { e.stopPropagation(); openPicker(false); $('pickerBtn').focus(); }
   if (e.key === 'Enter') { e.preventDefault(); $('pickerList').querySelector('.opt:not(:disabled)')?.click(); }
@@ -430,11 +431,11 @@ function updateComposer() {
 function autosize() { const t = $('input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 168) + 'px'; updateComposer(); }
 $('input').addEventListener('input', autosize);
 $('input').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
 $('newChat').onclick = () => { if (!S.streaming) { S.chat = []; render(); $('input').focus(); } };
-$('composer').addEventListener('submit', async e => {
-  e.preventDefault();
+$('send').onclick = () => send();
+async function send() {
   if (S.streaming) { try { await call('chat_stop', {job: S.job}); } catch (err) {} return; }
   const text = $('input').value.trim(); if (!text) return;
   $('input').value = ''; autosize(); notice('');
@@ -457,7 +458,7 @@ $('composer').addEventListener('submit', async e => {
     }
   } catch (err) { turn.error = err.message; }
   S.streaming = false; render(); $('input').focus();
-});
+}
 
 // ── 日志 ─────────────────────────────────────────────────────────
 function setDrawer(open) {
