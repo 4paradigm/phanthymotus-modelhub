@@ -11,6 +11,10 @@ modelhub:
   # CDI；另一台（星源智 N4，R38.4）正相反，nvidia runtime 是默认 runtime 而没有 CDI
   # 描述文件。前者是宿主机配置没生效（daemon.json 写了），重启一次 dockerd 即可。
   runtime: nvidia
+  # 容器的 1 号进程要能回收孤儿。vLLM 的 EngineCore 是 `vllm serve` 的子进程，父进程先退
+  # 时它被过继给 1 号进程；1 号是 main.py 的话没人 wait 它，每换一次模型留一个 <defunct>
+  # （N4 上实测：两次加载/卸载后留下两个）。init: true 让 docker 的 tini 当 1 号。
+  init: true
   network_mode: host
   # vLLM 的 worker 进程之间走共享内存，容器默认 64 MB 的 /dev/shm 不够
   ipc: host

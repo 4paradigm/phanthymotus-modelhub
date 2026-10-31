@@ -46,3 +46,8 @@ def test_models_volume_and_restart(service):
     assert service["restart"] == "always"
     assert service["logging"] == {"driver": "local",
                                   "options": {"max-size": "10m", "max-file": "3"}}
+
+
+def test_pid_1_reaps_orphans(service):
+    """vLLM 的 EngineCore 被过继给 1 号进程；main.py 不 wait，每次换模型留一个僵尸。"""
+    assert service["init"] is True
