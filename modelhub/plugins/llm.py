@@ -217,8 +217,7 @@ class LLMPlugin:
             "state": state, "message": message, "model": model,
             "error": message if state == "error" else "",
             "busy": False,     # 下载/加载都在后台继续，关掉运维页不影响它们
-            "serving": {"base_url": f"{self._gateway_url}/v1",
-                        "models": [{"id": r["id"], "state": r["state"]} for r in self._routes()]},
+            "serving": self._serving(saved),
             "engine": st,
             "engine_version": self._engine_version,
             "memory": {"total_gb": round(self._total_gb, 1),
@@ -636,6 +635,33 @@ class LLMPlugin:
             return []
         return [{"id": engine.model_id, "state": engine.state, "base_url": engine.base_url,
                  "kind": "llm"}]
+
+    def _serving(self, saved: dict) -> dict:
+        """agent-core 自发现读的那一段：网关地址、在服务的模型、本机已下好的模型。
+
+        context_tokens 是「一个会话最多能放多少 token」：上下文上限和 KV cache 容量
+        取小的那个 —— KV 放不下时 vLLM 会把请求挤到排队，agent-core 按它提前压缩历史。
+        """
+        engine = self._current()
+        loaded = []
+        if engine:
+            limit = int((getattr(engine, "serve", None) or {}).get("max_model_len") or 0) or None
+            kv = getattr(engine, "kv_tokens", None)
+            spec = self._registry.all().get(engine.model_id)
+            loaded.append({"id": engine.model_id, "state": engine.state,
+                           "title": spec.title if spec else engine.model_id,
+                           "max_model_len": limit, "kv_tokens": kv,
+                           "context_tokens": min(x for x in (limit, kv) if x) if (limit or kv)
+                           else None})
+        installed = []
+        for spec in self._registry.all().values():
+            if spec.kind != "llm" or not is_installed(spec, self._models_root):
+                continue
+            eff = self._effective_config(spec, (saved.get("configs") or {}).get(spec.id) or {})
+            installed.append({"id": spec.id, "title": spec.title,
+                              "max_model_len": int(eff.get("max_model_len") or 0) or None,
+                              "unsupported": unsupported_reason(spec, self._engine_version)})
+        return {"base_url": f"{self._gateway_url}/v1", "models": loaded, "installed": installed}
 
     def _current(self) -> VLLMEngine | None:
         with self._lock:
