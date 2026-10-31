@@ -144,7 +144,9 @@ def test_workbench_page_fits_the_host_limit(make):
     assert page["protocol"] == "motus.workbench/1"
     assert len(page["html"]) <= 250_000                  # workbench.js 的上限
     assert "motus.workbench/1" in page["html"]
-    assert "http://" not in page["html"] and "https://" not in page["html"]  # 宿主 CSP 禁外链
+    # 宿主 CSP 禁外链。SVG 的命名空间是个标识符、不会去取，不算外链 —— 内联图标离不开它
+    html = page["html"].replace("http://www.w3.org/2000/svg", "")
+    assert "http://" not in html and "https://" not in html
     # 宿主 iframe 只有 sandbox="allow-scripts"：表单提交被拦，连 submit 事件都没有。
     # 第一版对话就是这么发不出消息的。
     assert "<form" not in page["html"] and "requestSubmit" not in page["html"]
