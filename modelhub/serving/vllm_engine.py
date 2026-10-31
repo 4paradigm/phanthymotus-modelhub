@@ -100,6 +100,32 @@ def kv_cache_bytes(budget_gb: float, weights_bytes: int) -> int:
     return int(kv * 2**30)
 
 
+_DTYPE_BYTES = {"bfloat16": 2, "float16": 2, "half": 2, "float32": 4, "float": 4,
+                "fp8": 1, "fp8_e4m3": 1, "fp8_e5m2": 1}
+
+
+def kv_bytes_per_token(config: dict, kv_cache_dtype: str | None = None) -> int | None:
+    """一个 token 在 KV cache 里占多少字节：2（K 和 V）× 全注意力层数 × KV 头数 × 头维度 × 精度。
+
+    读模型自己的 config.json。多模态模型的语言部分在 text_config 里；混合注意力的模型
+    （Qwen3.5：每 4 层只有 1 层是全注意力，其余是线性注意力，状态大小与长度无关）只算
+    full_attention 那几层。算不出来就返回 None，页面上不给估计。
+    """
+    c = config.get("text_config") or config
+    try:
+        layers = int(c["num_hidden_layers"])
+        types = c.get("layer_types")
+        if isinstance(types, list) and types:
+            layers = sum(1 for t in types if t == "full_attention")
+        heads = int(c.get("num_key_value_heads") or c["num_attention_heads"])
+        head_dim = int(c.get("head_dim") or int(c["hidden_size"]) // int(c["num_attention_heads"]))
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    dtype = (kv_cache_dtype if kv_cache_dtype not in (None, "", "auto")
+             else c.get("torch_dtype") or c.get("dtype") or config.get("torch_dtype") or "bfloat16")
+    return 2 * layers * heads * head_dim * _DTYPE_BYTES.get(str(dtype).lower(), 2)
+
+
 def build_command(model_path: str, served_name: str, port: int, serve: dict,
                   budget_gb: float, total_gb: float, executable: str = "vllm",
                   overhead_gb: float = DEFAULT_HOST_OVERHEAD_GB,
@@ -165,6 +191,7 @@ def cache_env(cache_dir: str) -> dict:
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _PROC_PREFIX = re.compile(r"^\((?:APIServer|EngineCore[^)]*) pid=\d+\)\s*")
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+_KV_SIZE = re.compile(r"GPU KV cache size: ([\d,]+) tokens")
 _OWN_POLLS = re.compile(r'"GET /(metrics|health) HTTP/1\.[01]" 200')
 _LEVEL = re.compile(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\b")
 
@@ -211,6 +238,7 @@ class VLLMEngine:
         self._ready_at = 0.0
         self._stop_requested = threading.Event()
         self._logs: collections.deque[str] = collections.deque(maxlen=log_lines)
+        self.kv_tokens: int | None = None       # 引擎启动后自己报告的 KV cache 容量
 
     # ── 对外 ────────────────────────────────────────────────────────────────
 
@@ -264,7 +292,7 @@ class VLLMEngine:
             return {
                 "model": self.model_id, "state": self._state, "error": self._error,
                 "base_url": self.base_url, "budget_gb": self.budget_gb,
-                "footprint_gb": self.footprint_gb,
+                "footprint_gb": self.footprint_gb, "kv_tokens": self.kv_tokens,
                 "pid": self._proc.pid if self._proc else None,
                 "uptime_s": round(now - self._ready_at, 1) if self._state == READY else 0,
                 "load_s": round((self._ready_at or now) - self._started_at, 1)
@@ -306,6 +334,9 @@ class VLLMEngine:
             line = clean_log_line(raw.decode("utf-8", "replace"))
             if _OWN_POLLS.search(line):
                 continue        # 监控每 5 秒抓 /metrics、加载时每秒探 /health —— 不留，否则日志全是它
+            m = _KV_SIZE.search(line)
+            if m:
+                self.kv_tokens = int(m.group(1).replace(",", ""))
             if line:
                 with self._lock:
                     self._logs.append(line)

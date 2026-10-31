@@ -154,3 +154,18 @@ def test_kv_cache_is_given_so_vllm_skips_its_memory_profiling():
         kv_cache_bytes(8, int(8.06e9))
     # 不知道权重大小时退回比例
     assert "--kv-cache-memory-bytes" not in build_command("/m", "m", 1, {}, 6, 59)
+
+
+def test_kv_bytes_per_token_from_the_models_own_config():
+    """页面据此估「KV cache 放得下多少 token」。Qwen3-4B 在 N4 上：估 43,637，引擎报 43,744。"""
+    from serving.vllm_engine import kv_bytes_per_token
+    qwen3_4b = {"num_hidden_layers": 36, "num_key_value_heads": 8, "num_attention_heads": 32,
+                "head_dim": 128, "hidden_size": 2560, "torch_dtype": "bfloat16"}
+    assert kv_bytes_per_token(qwen3_4b) == 147456
+    assert kv_bytes_per_token(qwen3_4b, "fp8") == 73728
+    # Qwen3.5：多模态把语言部分放在 text_config；每 4 层只有 1 层全注意力
+    qwen35 = {"text_config": {"num_hidden_layers": 32, "num_key_value_heads": 4, "num_attention_heads": 16,
+                              "head_dim": 256, "hidden_size": 2560, "dtype": "bfloat16",
+                              "layer_types": (["linear_attention"] * 3 + ["full_attention"]) * 8}}
+    assert kv_bytes_per_token(qwen35) == 2 * 8 * 4 * 256 * 2
+    assert kv_bytes_per_token({}) is None

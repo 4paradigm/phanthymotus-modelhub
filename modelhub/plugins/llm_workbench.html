@@ -133,6 +133,12 @@ button:disabled { cursor: default; opacity: .4; }
 .field input, .field select, select.input { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 13px; color: var(--ink); width: 100%; }
 .field.changed > span::after { content: "（已改）"; color: var(--accent); }
 .field .hint { font-size: 11.5px; color: var(--faint); line-height: 1.45; }
+.kv-est { margin-top: 14px; padding: 12px 14px; background: var(--rail); border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 6px; }
+.kv-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.kv-head b { font-weight: 600; }
+.kv-line { font-size: 12.5px; line-height: 1.6; }
+.kv-line input { width: 88px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); font-size: 12.5px; }
+.bad-text { color: var(--bad); font-weight: 500; }
 .advanced { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
 .advanced summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .advanced[open] summary { color: var(--ink); }
@@ -444,6 +450,7 @@ function renderService(full) {
       <dt>模型名</dt><dd>${esc(current() || '—')}</dd>
       <dt>运行时长</dt><dd>${st === 'ready' && eng.uptime_s ? fmtEta(Math.round(eng.uptime_s)) : '—'}</dd>
       <dt>上次加载用时</dt><dd>${eng.load_s ? `${Math.round(eng.load_s)} 秒` : '—'}</dd>
+      <dt>KV cache 容量</dt><dd>${eng.kv_tokens && st !== 'idle' ? `${eng.kv_tokens.toLocaleString('en-US')} token（引擎报告）${kvSessionsText(eng.kv_tokens)}` : '—'}</dd>
       <dt>推理引擎</dt><dd>vLLM ${esc((i.engine_version || '?').split('+')[0])}</dd>
     </dl>
     <div class="actions">
@@ -482,10 +489,42 @@ function cfgField([k, label, type, hint], c) {
   }
   return `<label class="field${changed.has(k) ? ' changed' : ''}"><span>${label}</span>${input}<small class="hint">${esc(hint)}</small></label>`;
 }
+// ── KV cache 容量：agent 的前缀能不能留在缓存里 ──────────────────────────
+// 和引擎的算法一致：KV = 预算 - 权重 - 运行余量；token 数 = KV 字节 / 每 token 字节
+S.sessionTokens = 30000;   // agent 一次请求的提示大约多长（系统提示 + 工具 + 历史）
+function kvTokensFor(budgetGb, kv) {
+  if (!kv?.bytes_per_token || !(budgetGb > 0)) return null;
+  const bytes = (budgetGb - kv.weights_gib - kv.margin_gib) * 2 ** 30;
+  return bytes > 0 ? Math.floor(bytes / kv.bytes_per_token) : 0;
+}
+function budgetFor(sessions, kv) {
+  return kv.weights_gib + kv.margin_gib + sessions * S.sessionTokens * kv.bytes_per_token / 2 ** 30;
+}
+function kvSessionsText(tokens) {
+  const n = Math.floor(tokens / S.sessionTokens);
+  return `，按一次提示 ${S.sessionTokens.toLocaleString('en-US')} token 算${n >= 1 ? `能同时保住约 ${n} 个会话的缓存` : '一个会话都放不下'}`;
+}
+function kvEstimateHTML(c) {
+  const kv = c.kv; if (!kv?.bytes_per_token) return '';
+  const budget = Number(document.querySelector('[data-cfg="memory_gb"]')?.value) || c.config.memory_gb;
+  const tokens = kvTokensFor(budget, kv), n = Math.floor((tokens || 0) / S.sessionTokens);
+  const ctx = Number(c.config.max_model_len) || 0;
+  const perTok = kv.bytes_per_token >= 1024 ? `${Math.round(kv.bytes_per_token / 1024)} KB` : `${kv.bytes_per_token} B`;
+  const want = Math.max(2, n + 1), need = budgetFor(want, kv);
+  return `<div class="kv-est" id="kvEst">
+    <div class="kv-head"><b>KV cache 放得下 ${tokens == null ? '—' : tokens.toLocaleString('en-US')} token</b>
+      <span class="muted">每 token ${perTok}；预算 ${gb(budget)} GB − 权重 ${gb(kv.weights_gib)} GB − 运行余量 ${gb(kv.margin_gib)} GB</span></div>
+    <div class="kv-line">agent 一次请求的提示约 <input id="sessTok" type="number" min="1000" step="1000" value="${S.sessionTokens}" aria-label="一次请求的提示长度"> token，
+      ${n >= 1 ? `能同时保住约 <b>${n}</b> 个会话的前缀缓存` : '<b class="bad-text">一个会话的前缀都放不下</b>'}。
+      ${S.sessionTokens > ctx && ctx ? `<span class="bad-text">超过了上下文长度 ${ctx.toLocaleString('en-US')}。</span>` : ''}</div>
+    <div class="kv-line muted">主 agent 和子 agent 交替请求时，放不下的会互相挤掉缓存，每次都要重算前缀。要保住 ${want} 个会话，预算约需 ${Math.ceil(need)} GB${need + (S.info?.memory?.overhead_gb || 4.4) > 0.9 * (S.models?.total_gb || 57.8) ? '（超过整机 90%，装不下）' : ''}。</div>
+  </div>`;
+}
 function cfgForm(c) {
   const v = c.config, changed = new Set(c.overridden);
   const advChanged = CFG_ADVANCED.some(([k]) => changed.has(k)) || changed.has('enforce_eager');
   return `<div class="form">${CFG_BASIC.map(f => cfgField(f, c)).join('')}</div>
+    ${kvEstimateHTML(c)}
     <details class="advanced"${advChanged ? ' open' : ''}><summary>高级设置</summary>
       <p class="sub" style="margin:8px 0 12px">这些由模型本身决定，推荐模型都已配好，一般不用改；接入新模型时才需要。</p>
       <div class="form">${CFG_ADVANCED.map(f => cfgField(f, c)).join('')}</div>
@@ -514,6 +553,11 @@ $('page').addEventListener('change', async e => {
 });
 let logTimer = null;
 $('page').addEventListener('input', e => {
+  if (S.page === 'service' && S.cfg && (e.target.dataset.cfg === 'memory_gb' || e.target.id === 'sessTok')) {
+    if (e.target.id === 'sessTok') S.sessionTokens = Math.max(1000, Number(e.target.value) || 30000);
+    const old = $('kvEst'), focusSess = e.target.id === 'sessTok';
+    if (old) { old.outerHTML = kvEstimateHTML(S.cfg); if (focusSess) { const i = $('sessTok'); i.focus(); i.setSelectionRange?.(99, 99); } }
+  }
   if (S.page === 'service' && e.target.id === 'logQ') { S.logQ = e.target.value; clearTimeout(logTimer); logTimer = setTimeout(refreshLogs, 300); }
 });
 $('page').addEventListener('click', async e => {

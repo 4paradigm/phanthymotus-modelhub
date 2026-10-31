@@ -43,8 +43,9 @@ from serving.metrics import RANGES, MetricsStore, Sampler
 from serving.vllm_info import ParserChoices
 from serving.registry import (MODEL_ID_RE, Registry, installed_vllm_version, is_installed,
                               model_dir, pin_from_modelscope, unsupported_reason)
-from serving.vllm_engine import (DEFAULT_HOST_OVERHEAD_GB, ERROR, IDLE, LOADING, READY,
-                                 STOPPING, VLLMEngine, footprint_gb, total_memory_gb)
+from serving.vllm_engine import (DEFAULT_HOST_OVERHEAD_GB, ERROR, IDLE, LOADING, NON_KV_MARGIN_GB,
+                                 READY, STOPPING, VLLMEngine, footprint_gb, kv_bytes_per_token,
+                                 total_memory_gb)
 
 log = logging.getLogger(__name__)
 
@@ -448,8 +449,16 @@ class LLMPlugin:
         state = self._load_state()
         saved = (state.get("configs") or {}).get(spec.id) or {}
         eff = self._effective_config(spec, saved)
+        try:
+            model_cfg = json.loads((model_dir(self._models_root, spec.id) / "config.json").read_text())
+        except (OSError, ValueError):
+            model_cfg = {}
+        # 页面用这几个数随预算实时算「KV cache 放得下多少 token」，和引擎的算法一致：
+        # KV = 预算 - 权重 - 运行余量（见 vllm_engine.kv_cache_bytes）
+        kv = {"bytes_per_token": kv_bytes_per_token(model_cfg, eff.get("kv_cache_dtype")),
+              "weights_gib": round(spec.weights_bytes / 2**30, 3), "margin_gib": NON_KV_MARGIN_GB}
         return {"model": spec.id, "config": {k: eff.get(k) for k in self.CONFIG_FIELDS},
-                "choices": self._parsers.get(),
+                "kv": kv, "choices": self._parsers.get(),
                 "overridden": sorted(saved), "autoload": bool(state.get("autoload")),
                 "selected": state.get("model"), "footprint_gb": footprint_gb(float(eff["memory_gb"]),
                                                                            self._overhead_gb)}
