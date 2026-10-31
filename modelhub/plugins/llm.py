@@ -91,6 +91,7 @@ TOOLS = [{
             "range": {"type": "string", "enum": list(RANGES)},
             "id": {"type": "string"},
             "think": {"type": "boolean"},
+            "force": {"type": "boolean", "description": "load：同模型同配置也重新加载（重启）"},
             "max_tokens": {"type": "integer"},
             "job": {"type": "string"},
             "text_from": {"type": "integer"},
@@ -158,6 +159,7 @@ class LLMPlugin:
         self._total_gb = total_gb if total_gb is not None else total_memory_gb()
         self._overhead_gb = float(cfg.get("host_overhead_gb", DEFAULT_HOST_OVERHEAD_GB))
         self._lock = threading.RLock()          # 守 _engine / _pending / _generation
+        self._switching = False                 # _switch_to 正在停旧引擎、起新引擎
         self._switch_lock = threading.Lock()    # 串行化 load/unload，不阻塞 info
         self._engine: VLLMEngine | None = None
         self._chat: ChatJob | None = None       # 运维页里当前的那一个对话任务
@@ -328,6 +330,12 @@ class LLMPlugin:
                 saved[key] = float(args[key]) if key == "memory_gb" else int(args[key])
         serve = self._effective_config(spec, saved)
         budget = float(serve.pop("memory_gb"))
+        # 同一个模型、同样的配置已经在准备或已就绪：什么都不做。以前每次 load 都起一个新
+        # 引擎、把正在加载的那个杀掉 —— 运维页在切换的那几十秒里显示「已停止」，人再点
+        # 一次「启动」，加载就被打断重来，永远起不来（thor_pack 2026-11-01，一分钟四次）。
+        same = None if args.get("force") else self._already_serving(spec.id, serve, budget)
+        if same:
+            return same                    # 「重启」带 force，照常重来
         # 先建引擎（参数不合法会在这里抛，用户立刻看到），再保存选择、在后台准备
         engine = self._engine_factory(
             model_id=spec.id, model_path=str(model_dir(self._models_root, spec.id)),
@@ -349,6 +357,19 @@ class LLMPlugin:
                          daemon=True, name=f"llm-load-{spec.id}").start()
         return {"loading": spec.id, "memory_gb": budget, "download_first": not installed,
                 "footprint_gb": engine.footprint_gb}
+
+    def _already_serving(self, model_id: str, serve: dict, budget: float) -> dict | None:
+        with self._lock:
+            engine, pending, switching = self._engine, self._pending, self._switching
+        if pending and pending.get("model") == model_id and pending.get("phase") != "error":
+            return {"loading": model_id, "memory_gb": budget, "already": True}
+        if (engine is not None and engine.model_id == model_id
+                and dict(getattr(engine, "serve", None) or {}) == dict(serve)
+                and getattr(engine, "budget_gb", None) == budget
+                and (switching or engine.status().get("state") in (LOADING, READY))):
+            return {"loading": model_id, "memory_gb": budget, "already": True,
+                    "footprint_gb": engine.footprint_gb}
+        return None
 
     def _do_unload(self, args):
         state = self._load_state()
@@ -732,6 +753,10 @@ class LLMPlugin:
             return "idle", "未加载模型（在运维页选择并加载）", None
         st = engine.status()
         title = self._title(engine.model_id)
+        with self._lock:
+            switching = self._switching
+        if switching and st["state"] not in (LOADING, READY, ERROR):
+            return "loading", f"正在停止上一个模型，然后加载 '{title}' …", engine.model_id
         if st["state"] == LOADING:
             return ("loading", f"正在加载模型 '{title}'（已 {st.get('load_s', 0):.0f}s）…",
                     engine.model_id)
@@ -755,10 +780,15 @@ class LLMPlugin:
                 if generation is not None and generation != self._generation:
                     return                 # 排队期间又换了模型
                 old, self._engine = self._engine, engine
-            if old:
-                old.stop()             # 统一内存装不下两份：先停旧的再起新的
-            if engine:
-                engine.start()
+                self._switching = True     # 停旧的那几十秒里，新引擎还没起 —— 别报「已停止」
+            try:
+                if old:
+                    old.stop()             # 统一内存装不下两份：先停旧的再起新的
+                if engine:
+                    engine.start()
+            finally:
+                with self._lock:
+                    self._switching = False
 
     def _autoload(self) -> None:
         state = self._load_state()

@@ -430,3 +430,52 @@ def test_an_image_newer_than_the_driver_says_so_and_does_not_start(make):
     assert info["state"] == "error" and info["message"] == problem
     r = plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
     assert problem in str(r) and not _FakeEngine.instances
+
+
+def test_clicking_start_again_does_not_restart_a_load_in_progress(make, tmp_path):
+    """thor_pack 2026-11-01：启动后页面看不出变化，人连点四次，每次都把正在加载的杀掉重来。"""
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    for _ in range(3):
+        r = plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+        assert r.get("already") is True
+    assert len(_FakeEngine.instances) == 1 and not _FakeEngine.instances[0].stopped.is_set()
+
+
+def test_restart_still_restarts(make, tmp_path):
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b"})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "force": True})
+    assert _wait(lambda: len(_FakeEngine.instances) == 2 and _FakeEngine.instances[0].stopped.is_set())
+
+
+def test_a_changed_config_is_a_real_reload(make, tmp_path):
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "memory_gb": 6})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "memory_gb": 8})
+    assert _wait(lambda: len(_FakeEngine.instances) == 2)
+
+
+def test_while_the_old_model_stops_the_card_says_loading_not_stopped(make, tmp_path):
+    """停旧引擎最长 30 秒，那期间新引擎还没起：以前报「已停止」，页面又露出「启动」按钮。"""
+    plugin, router = make()
+    _install(tmp_path, plugin, "qwen3-0.6b")
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "memory_gb": 6})
+    assert _wait(lambda: router.resolve("qwen3-0.6b")[1] == 200)
+    old = _FakeEngine.instances[0]
+    release = threading.Event()
+    orig_stop = old.stop
+    old.stop = lambda: (release.wait(5), orig_stop())
+    plugin.dispatch("llm", {"action": "load", "model": "qwen3-0.6b", "memory_gb": 8})
+    assert _wait(lambda: len(_FakeEngine.instances) == 2)
+    time.sleep(0.1)
+    info = plugin.dispatch("llm", {"action": "info"})
+    assert info["state"] == "loading" and "正在停止上一个模型" in info["message"]
+    release.set()
+    assert _wait(lambda: plugin.dispatch("llm", {"action": "info"})["state"] == "ready")

@@ -606,12 +606,14 @@ $('page').addEventListener('click', async e => {
   if (a === 'stop' && !confirmTwice(b, '再点一次停止')) return;
   if (a === 'reset' && !confirmTwice(b, '再点一次恢复默认')) return;
   b.disabled = true;
+  // 点了马上看得到：以前按钮原样不动，状态要等下一次轮询，人就再点一次
+  if (a === 'start' || a === 'restart') b.textContent = a === 'start' ? '正在启动…' : '正在重启…';
   if (a === 'start') await act(() => call('load', {model: S.cfgModel}));
-  if (a === 'restart') await act(() => call('load', {model: current()}));
+  if (a === 'restart') await act(() => call('load', {model: current(), force: true}));
   if (a === 'stop') await act(() => call('unload'));
   if (a === 'save' || a === 'save-restart') {
     const r = await act(() => call('config_set', {model: S.cfgModel, values: collectCfg()}));
-    if (r) { S.cfg = r; if (a === 'save-restart') await act(() => call('load', {model: S.cfgModel})); }
+    if (r) { S.cfg = r; if (a === 'save-restart') await act(() => call('load', {model: S.cfgModel, force: true})); }
   }
   if (a === 'reset') {
     const values = Object.fromEntries(S.cfg.overridden.map(k => [k, null]));
