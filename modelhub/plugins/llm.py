@@ -457,7 +457,9 @@ class LLMPlugin:
         # KV = 预算 - 权重 - 运行余量（见 vllm_engine.kv_cache_bytes）
         kv = {"bytes_per_token": kv_bytes_per_token(model_cfg, eff.get("kv_cache_dtype")),
               "weights_gib": round(spec.weights_bytes / 2**30, 3), "margin_gib": NON_KV_MARGIN_GB}
+        defaults = self._effective_config(spec, {})
         return {"model": spec.id, "config": {k: eff.get(k) for k in self.CONFIG_FIELDS},
+                "defaults": {k: defaults.get(k) for k in self.CONFIG_FIELDS},
                 "kv": kv, "choices": self._parsers.get(),
                 "overridden": sorted(saved), "autoload": bool(state.get("autoload")),
                 "selected": state.get("model"), "footprint_gb": footprint_gb(float(eff["memory_gb"]),

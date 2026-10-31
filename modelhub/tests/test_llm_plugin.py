@@ -289,6 +289,7 @@ def test_launch_config_is_saved_per_model_and_used_on_the_next_load(make, tmp_pa
     _install(tmp_path, plugin, "qwen3-0.6b")
     got = plugin.dispatch("llm", {"action": "config_get", "model": "qwen3-0.6b"})
     assert got["config"]["max_model_len"] == 8192 and got["overridden"] == []
+    assert got["defaults"]["max_model_len"] == 8192          # 页面在改过的字段旁写「默认 8192」
     r = plugin.dispatch("llm", {"action": "config_set", "model": "qwen3-0.6b",
                                 "values": {"max_model_len": 4096, "max_num_seqs": 4,
                                            "cudagraph_capture_sizes": "1, 2 4"}})
