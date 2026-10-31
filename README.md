@@ -4,9 +4,12 @@ On-robot model serving for [PhanthyMotus](https://github.com/4paradigm/phanthymo
 large models (LLM first, then VLM and others) running **on the robot's own
 accelerator**, exposed over an OpenAI-compatible HTTP API.
 
-> **Status: skeleton + first card (LLM via vLLM).** Unit-tested; end-to-end on
-> Jetson Thor in progress. Models other than Qwen3 0.6B have not been measured on
-> Thor yet — their memory budgets in `models.yaml` are estimates.
+> **Status: skeleton + first card (LLM via vLLM).** Verified on a Jetson Thor running
+> JetPack 7.1 (Xingyuanzhi N4) with Qwen3-0.6B: download-then-load with progress,
+> gateway, tool calls, persistence, autoload after a container rebuild. **Not yet
+> verified:** Agent Core integration (card in the dashboard, a real conversation),
+> the JetPack 7.2 image at runtime, and PhanthyMotus 0.1. Models other than
+> Qwen3-0.6B have not been run — their memory budgets in `models.yaml` are estimates.
 
 ## Where it sits
 
@@ -46,10 +49,14 @@ modelhub/
     registry.py        model rows: ModelScope source, pinned revision, size + SHA256 per file
     downloads.py       background downloads via perception's model_downloader
   tools/pin_model.py   generate a registry row from ModelScope
-  Dockerfile.jetson    FROM jetson-base:jp72-vllm
+  Dockerfile.jetson    FROM jetson-base:jp<line>-vllm (one per JetPack line)
   deploy/service.yml   compose fragment shipped in the image
   tests/
-deploy/build_modelhub.sh
+deploy/
+  build_modelhub.sh    the ModelHub image (sources phanthymotus/deploy/build_common.sh)
+  prepare_jp_v71.sh    base image for JetPack 7.1   ┐ like phanthymotus's
+  prepare_jp_v72.sh    base image for JetPack 7.2   ┘ prepare_jp_v511.sh / v61.sh
+  prepare_vllm_base.sh their shared build logic
 ```
 
 Two planes:
@@ -91,12 +98,22 @@ The row pins the repo's HEAD commit and every file's size and SHA256. The ops
 page's "添加模型" does the same at runtime and writes to
 `/models/modelhub/state/models.user.yaml`.
 
+A row may declare `min_vllm`. The vLLM version is fixed by the base image, and
+the base image by the host's driver (see [Base images](#base-images)), so a new
+architecture can be out of reach on an older JetPack line. Such a model is
+marked "本机不支持" on the ops page and `load` refuses it before downloading
+anything. PhanthyMotus 0.1 (Qwen3.5) needs vLLM ≥ 0.19: checked in both base
+images, the 0.19 one has `Qwen3_5ForConditionalGeneration`, the 0.11 one does not.
+
 `memory_gb` is converted to vLLM's `--gpu-memory-utilization`. On Jetson that
 fraction is of the **whole unified memory**, which perception, Agent Core and
 the OS share; vLLM's default 0.9 would starve them. The budget covers only what
 vLLM accounts for on the GPU side; the process itself takes about 4.4 GB more
-(measured on Thor: a 6 GB budget cost 9.8 GB of MemAvailable), so the ops page
-shows budget + `host_overhead_gb`, and that sum is what is capped at 90%.
+(measured on a JetPack 7.2 Thor with vLLM 0.31: a 6 GB budget cost 9.8 GB of
+MemAvailable), so the ops page shows budget + `host_overhead_gb`, and that sum
+is what is capped at 90%. Treat it as an upper bound: on the JetPack 7.1 N4 with
+vLLM 0.11 the same budget raised used RAM by only 2.3 GB at idle — memory there
+appears to be committed as the KV cache fills.
 
 Selecting a model that is not on disk downloads it first and then loads it —
 from the ops page, and on boot for the remembered selection. While it does, the
@@ -111,26 +128,58 @@ Follows phanthymotus's infrastructure: `deploy/build_modelhub.sh` sources
 `PHANTHYMOTUS_DIR`) and reads registry credentials from its `deploy/.env`.
 
 ```
-./deploy/build_modelhub.sh --mirror tuna           # JetPack 7.2
+./deploy/build_modelhub.sh --mirror tuna                    # JetPack 7.2 (default)
+./deploy/build_modelhub.sh --jp-version 7.1 --mirror tuna   # JetPack 7.1
 ```
 
-Image: `<registry>/phanthy-motus/modelhub:release.<YYMMDD>.<sha>-jetson-jp7.2`.
+Image: `<registry>/phanthy-motus/modelhub:release.<YYMMDD>.<sha>-jetson-jp<line>`.
+**Install the image built for the machine's JetPack line** — a 7.2 image on a
+7.1 machine fails at vLLM init. Agent Core cannot tell the two lines apart (both
+run kernel 6.8 and report `jetson-jp7`), so the tag suffix is what decides.
+
 Deploy through the console, or for a throwaway test on the target:
 `curl -fsSL https://motus.phanthy.com/run-pr-image.sh | bash -s -- <image>`.
+The fragment asks for `runtime: nvidia`, like perception and actucore — the GPU
+driver always comes from the host — and `init: true`, so the vLLM EngineCore
+orphaned on every model switch is reaped instead of left `<defunct>`.
 
-### Base image
-
-`jetson-base:jp72-vllm` is NVIDIA's NGC vLLM container, re-hosted in TCR
-unchanged (pulling nvcr.io from the robots runs at ~130 KB/s):
+On a rig without registry credentials, build the base locally first and pass it
+in (the tag and commit come from the shell when the tree is a `git archive`):
 
 ```
-D=$(docker buildx imagetools inspect nvcr.io/nvidia/vllm:26.10-py3 --raw \
-    | python3 -c "import sys,json;print([m['digest'] for m in json.load(sys.stdin)['manifests'] if m['platform']['architecture']=='arm64'][0])")
-docker buildx imagetools create -t bj-warehouse.tencentcloudcr.com/phanthy-motus/jetson-base:jp72-vllm nvcr.io/nvidia/vllm@$D
+sudo ./deploy/prepare_jp_v71.sh                    # -> local/phanthy-motus/jetson-base:jp71-vllm
+sudo env BASE_IMAGE=local/phanthy-motus/jetson-base:jp71-vllm BUILD_COMMIT=<sha> \
+    ./deploy/build_modelhub.sh --jp-version 7.1
 ```
 
-Registry-to-registry, nothing unpacked locally. Run it on the VPC build host;
-retry on a dropped upload, already-pushed layers are skipped.
+### Base images
+
+One per JetPack line, built from NGC's vLLM container by that line's prepare
+script and pushed to TCR as `jetson-base:jp<line>-vllm`:
+
+| Line | L4T | Driver CUDA | Upstream | CUDA | vLLM |
+|---|---|---|---|---|---|
+| 7.1 | R38.4 | 13.0 | `nvcr.io/nvidia/vllm:25.11-py3` | 13.0.2 | 0.11.0 |
+| 7.2 | R39.2 | 13.2 | `nvcr.io/nvidia/vllm:26.04-py3` | 13.2.1 | 0.19.0 |
+
+**The image's CUDA must not be newer than the host driver's.** The driver
+(`libcuda`) is always the host's; Docker mounts it in, the image cannot bring
+its own, and Jetson has no CUDA forward-compatibility package. Its PTX JIT cannot
+read PTX from a newer toolchain: on the 7.1 machine a CUDA 13.4 image failed vLLM
+engine init with `the provided PTX was compiled with an unsupported toolchain`,
+while torch's own kernels ran — they ship sm_110 machine code and never JIT.
+So each line takes the newest NGC release within its driver, and
+`prepare_vllm_base.sh` refuses to build an upstream whose CUDA is newer
+(checked: 26.04 as the 7.1 line fails the build). It also pins the upstream by
+digest, writes the line's facts to `/etc/jetpack.env`, and smoke-imports vLLM.
+
+The consequence is that the driver caps the vLLM version: 0.11 on 7.1, 0.19 on
+7.2, while upstream vLLM is at 0.32. A newer vLLM needs a newer JetPack, or a
+vLLM built from source against the line's CUDA.
+
+Run the prepare scripts on an arm64 host (a Thor itself): they pull from
+nvcr.io directly (~9 MB/s on the N4; ~130 KB/s on the other Thor, so measure
+first). With registry credentials they push; without, they keep a local tag.
 
 ## Tests
 
@@ -172,22 +221,31 @@ Split by **where the model runs and who owns the resource contention**, not by
 Name things after the role, not after one model class or one framework — the same
 service will host VLMs and embeddings too.
 
-## First target: Jetson Thor T4000
+## Targets: Jetson Thor
 
-| | |
-|---|---|
-| JetPack | 7.2.1 (L4T R39.2.1, Ubuntu 24.04) |
-| CUDA / TensorRT | 13.2 / 10.16 |
-| Memory | 59 GB unified (CPU + GPU + perception share it) |
+| | Thor dev kit (`thor`) | Xingyuanzhi N4 (`thor_pack`) |
+|---|---|---|
+| JetPack / L4T | 7.2.1 / R39.2.1 | 7.1 / R38.4 (vendor image, RT kernel) |
+| Driver CUDA | 13.2 | 13.0 |
+| Memory | 59 GB unified | 57.8 GB unified |
+| Image | `-jetson-jp7.2` | `-jetson-jp7.1` |
+| GPU into Docker | nvidia runtime declared, needs a `dockerd` restart to load | nvidia runtime (default) |
 
 Engines must be Thor (CUDA 13) builds; Orin JetPack 5/6 images do not apply.
 
+The N4 runs the vendor's customised image: do not `apt upgrade` it (the RT
+kernel is lost) and do not flash NVIDIA's stock L4T (CAN-FD, COM, NVMe, Wi-Fi and
+GPIO stop working). Moving it to JetPack 7.2 means the vendor's R39.2 image,
+flashed on site per its manual. Its root is a 98 GB overlay — keep the model
+volume on `/data` (`/opt/embodied/models` symlinked there).
+
 ## Open questions
 
-1. **Engine.** vLLM is the first engine. Whether its NGC build (CUDA 13.4 user
-   space) runs on Thor's 13.2 driver is being verified on the device.
+1. **vLLM version.** Capped by each line's driver (see Base images). Whether to
+   build a newer vLLM from source against CUDA 13.0 / 13.2 is open.
 2. **Memory budget.** Entered as GB per model (see above). The right numbers per
-   model on Thor alongside perception are still to be measured.
+   model on Thor alongside perception are still to be measured, and the two
+   lines account memory differently.
 3. **Local-first routing in Agent Core.** Agent Core currently sends each request to
    **all** live endpoints at once and takes the first answer. With a local and a
    cloud entry configured, every turn hits both. "Local first, cloud as fallback"
