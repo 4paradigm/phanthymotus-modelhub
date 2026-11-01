@@ -10,7 +10,7 @@ import pytest
 
 from serving import vllm_engine
 from serving.vllm_engine import (ERROR, IDLE, LOADING, READY, VLLMEngine, build_command,
-                                 cache_env, footprint_gb, memory_fraction)
+                                 cache_env, footprint_gb, memory_fraction, serve_env)
 
 FAKE_VLLM = str(Path(__file__).with_name("fake_vllm.py"))
 
@@ -60,6 +60,25 @@ def test_command_binds_loopback_and_enables_tool_calls():
     assert cmd[-2:] == ["--seed", "1"]
     with pytest.raises(ValueError):
         build_command("/m", "m", 1, {"extra_args": "--seed 1"}, 6, 59)
+
+
+def test_cached_prompt_tokens_are_reported():
+    """不开这个参数，usage 里没有 cached_tokens，前缀缓存命中与否从外面看不出来。"""
+    assert "--enable-prompt-tokens-details" in build_command("/m", "m", 1, {}, 6, 59)
+
+
+def test_a_models_own_env_reaches_the_vllm_process(tmp_path):
+    """FP8 在 Thor 上要 VLLM_TEST_FORCE_FP8_MARLIN=1 才不出 NaN —— 开关写在模型的 serve 段里。"""
+    serve = {"env": {"VLLM_TEST_FORCE_FP8_MARLIN": 1}}
+    assert serve_env(serve) == {"VLLM_TEST_FORCE_FP8_MARLIN": "1"}
+    eng = VLLMEngine(model_id="m", model_path="/m", port=1, serve=serve, budget_gb=6,
+                     total_gb=59, cache_dir=str(tmp_path), env={"FAKE_VLLM_LOAD_S": "0"})
+    assert eng._env["VLLM_TEST_FORCE_FP8_MARLIN"] == "1"
+    assert eng._env["VLLM_CACHE_ROOT"] == f"{tmp_path}/vllm"     # 缓存目录照旧
+    assert "env" not in " ".join(eng.command)                     # 不会混进命令行
+    for bad in ({"env": ["A=1"]}, {"env": {"A": True}}, {"env": {"A": None}}):
+        with pytest.raises(ValueError):
+            serve_env(bad)
 
 
 def test_cudagraph_capture_sizes_become_a_compilation_config():
