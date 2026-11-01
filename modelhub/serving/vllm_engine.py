@@ -133,7 +133,10 @@ def build_command(model_path: str, served_name: str, port: int, serve: dict,
     frac = memory_fraction(budget_gb, total_gb, overhead_gb)      # 也做「不超过整机 90%」的检查
     cmd = [executable, "serve", model_path,
            "--served-model-name", served_name,
-           "--host", "127.0.0.1", "--port", str(port)]
+           "--host", "127.0.0.1", "--port", str(port),
+           # 不开就不回 usage.prompt_tokens_details，agent-core 日志里 cached_tokens 永远是 0
+           # —— thor_pack 实测前缀其实几乎整段命中（10k 提示命中 9984+），只是看不见
+           "--enable-prompt-tokens-details"]
     if weights_bytes:
         # KV cache 直接给定（跳过 vLLM 的显存 profiling，见 kv_cache_bytes）。此时
         # gpu-memory-utilization 只剩启动时那道「比例 × 总量 ≤ CUDA 空闲」的检查在用，
@@ -169,6 +172,20 @@ def build_command(model_path: str, served_name: str, port: int, serve: dict,
     if not isinstance(extra, list) or not all(isinstance(a, str) for a in extra):
         raise ValueError("serve.extra_args 必须是字符串列表")
     return cmd + extra
+
+
+def serve_env(serve: dict) -> dict:
+    """模型自己要的环境变量（serve.env）。
+
+    有的模型只有设了 vLLM 的开关才能跑对，例如 FP8 checkpoint 在 Thor 上：vLLM 0.11 默认的
+    FP8 GEMM 输出全是 NaN（每个 token 都是 `!`，速度还虚高到 139 tok/s），
+    VLLM_TEST_FORCE_FP8_MARLIN=1 改走 Marlin 才正常。这种开关跟着模型走，不跟着部署走。
+    """
+    env = serve.get("env") or {}
+    if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, (str, int, float))
+                                            and not isinstance(v, bool) for k, v in env.items()):
+        raise ValueError("serve.env 必须是 {变量名: 字符串} 的 mapping")
+    return {k: str(v) for k, v in env.items()}
 
 
 def cache_env(cache_dir: str) -> dict:
@@ -259,7 +276,8 @@ class VLLMEngine:
                                      total_gb, executable, overhead_gb, weights_bytes)
         self._load_timeout_s = load_timeout_s
         self._popen = popen
-        self._env = {**cache_env(cache_dir), **(env or {})} if cache_dir else dict(env or {})
+        self._env = {**(cache_env(cache_dir) if cache_dir else {}), **serve_env(serve),
+                     **(env or {})}
         self._lock = threading.RLock()
         self._state = IDLE
         self._error = ""
