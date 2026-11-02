@@ -17,7 +17,7 @@ models:
     # 有 Qwen3_5ForConditionalGeneration，jp71 的 0.11 没有。0.11 和 0.19 之间哪一版
     # 开始支持没查，0.19 是实测过的下限。
     min_vllm: "0.19"
-    note: 基于 Qwen3.5-4B SFT（训练长度 25k）；Qwen3.5 架构，带视觉塔；未在 Thor 实测
+    note: 基于 Qwen3.5-4B SFT（训练长度 25k）；thor（jp7.2，vLLM 0.19）实测单路 28 tok/s；只开文本输入；agent-core 须关思考（默认就是关）
     source:
       modelscope: JoStWey/pm_1031
       revision: 167b15bd
@@ -56,7 +56,25 @@ models:
       memory_gb: 16.0
       max_model_len: 32768
       tool_call_parser: qwen3_coder
+      # 这个 SFT 在思考模式下不写 </think>：chat template 默认在生成开头放 <think>，
+      # 模型写一句话就直接出 <tool_call>，reasoning parser 把整段连同工具调用都归进
+      # reasoning，tool_calls 为空（thor 2026-11-02 实测）。agent-core 默认 think_mode=False
+      # 会发 enable_thinking=false，这时模板补一对空的 think，一切正常；打开 think_mode
+      # 才会出事。
       reasoning_parser: qwen3
+      extra_args:
+        # 只收文本。checkpoint 由 transformers 5.x 保存，视频 processor 的配置只在合并后的
+        # processor_config.json 里；vLLM 0.19 带的 transformers 4.57 只认单独的
+        # video_preprocessor_config.json，起多模态 processor 时报 `Unrecognized video
+        # processor` 退出。模型仓库补上那个文件之前，图像/视频输入关掉（也省得加载视觉塔）。
+        - --limit-mm-per-prompt
+        - '{"image":0,"video":0}'
+        # Qwen3.5 是线性注意力（Gated DeltaNet）+ 全注意力的混合架构，vLLM 默认不给它开
+        # 前缀缓存：agent 每轮 ~10k 的提示都从头预填充，TTFT 4.3 s。align 模式开了之后
+        # 命中 9504–10032 token，TTFT 0.14 s。vLLM 标注为实验性。
+        - --enable-prefix-caching
+        - --mamba-cache-mode
+        - align
 
   qwen3-0.6b:
     title: Qwen3 0.6B
