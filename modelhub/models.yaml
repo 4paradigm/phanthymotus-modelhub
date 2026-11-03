@@ -76,6 +76,58 @@ models:
         - --mamba-cache-mode
         - align
 
+  phanthymotus-0.1-int4:
+    title: PhanthyMotus 0.1 (INT4)
+    kind: llm
+    # 同一个 SFT 的 GPTQ INT4（对称、group 128、gptq_v2 格式，GPTQModel 量化）。只量化了
+    # 语言模型的层；视觉塔和与 embedding 共享的 lm_head（1.27 GB）仍是 BF16。
+    min_vllm: "0.19"
+    note: PhanthyMotus 0.1 的 INT4 量化版（GPTQ）；只开文本输入；agent-core 须关思考
+    source:
+      modelscope: JoStWey/pm_1031_int4
+      revision: 70d6a3ef
+    files:
+      chat_template.jinja:
+        size: 7756
+        sha256: a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715
+      config.json:
+        size: 3402
+        sha256: 64f26bca1d7a7472e71396a3c77905346b0476bc6106f2fb8ec32127266dc311
+      generation_config.json:
+        size: 214
+        sha256: d0d0ed2e37cdfafef4a5067d5ea2407b05f4fb50526e47c008a5b235d50240fb
+      model.safetensors:
+        size: 3798376392
+        sha256: 91265bc580f17a571f7319e74aeebbb21190bd9a66c898de22ca09ba6ac171d4
+      preprocessor_config.json:
+        size: 390
+        sha256: 27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516
+      processor_config.json:
+        size: 1191
+        sha256: d89ef49ce9cd37fbf510158e13c1ef063d9286411c1ec9049932dbe0487143b1
+      quantize_config.json:
+        size: 514
+        sha256: 9c9167f3e1b6dd8a8e600c43d309170a6f114ae454aff6e46f2bf49ad77ce1e7
+      tokenizer.json:
+        size: 19989325
+        sha256: 06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523
+      tokenizer_config.json:
+        size: 1165
+        sha256: 792fa3f0cb88b111e54ef3134c873531008c4df471d108da17903426e308aa7b
+    serve:
+      memory_gb: 16.0
+      max_model_len: 32768
+      tool_call_parser: qwen3_coder
+      # 和 phanthymotus-0.1 同一个 SFT：思考模式下不写 </think>，见那一条
+      reasoning_parser: qwen3
+      extra_args:
+        # 同 phanthymotus-0.1：checkpoint 同样缺 video_preprocessor_config.json
+        - --limit-mm-per-prompt
+        - '{"image":0,"video":0}'
+        - --enable-prefix-caching
+        - --mamba-cache-mode
+        - align
+
   qwen3-0.6b:
     title: Qwen3 0.6B
     kind: llm
